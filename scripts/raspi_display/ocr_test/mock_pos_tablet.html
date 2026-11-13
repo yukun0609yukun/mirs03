@@ -1,0 +1,147 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>模擬POS(ラズパイ画面用・枠なし・横向き)</title>
+<!--
+  ラズパイの腹部ディスプレイ(800x480、横長)で、模擬POSタブレットの「中身だけ」を表示するラッパー。
+  元のページ(mock_pos_tablet_original.html)は一切変更せず、iframeで読み込んで、同一オリジンのスタイルだけを上書きする。
+    - 説明文・操作パネル・タブレットの枠(ベゼル、影、角丸)を隠す
+    - 中身(7行)を90度回して、画面いっぱいに拡大する(横長の画面に7行を収めるため)
+  URLの引数:
+    ?rot=90   回転角(既定90=時計回り。-90で反時計回り、0で回さない、180)
+    ?s=1.0    倍率を固定する(省略時は画面に収まる最大倍率)
+  管理画面からの操作: 同じ場所の ocr_cmd.json(kiosk_admin.py が書く)を1秒おきに見て、数字のランダム化・元に戻す・値の指定を行う。
+  実行結果の読み戻し: 適用したseqと画面の7つの数字を kiosk_admin.py の POST /ocr_mock_ack(127.0.0.1:8083)へ知らせる。
+-->
+<style>
+  html, body { margin: 0; height: 100%; background: #fff; overflow: hidden; }
+  #stage { position: fixed; left: 50%; top: 50%; transform-origin: center center; visibility: hidden; }
+  #f { border: 0; display: block; background: #fff; }
+</style>
+</head>
+<body>
+<div id="stage"><iframe id="f" src="mock_pos_tablet_original.html" scrolling="no"></iframe></div>
+<script>
+(function () {
+  var q = new URLSearchParams(location.search);
+  var rot = parseFloat(q.get("rot")); if (!isFinite(rot)) rot = 90;
+  var fixedScale = parseFloat(q.get("s"));
+  var f = document.getElementById("f"), stage = document.getElementById("stage");
+
+  var CSS = [
+    ".intro, .panel { display: none !important; }",
+    "html, body { margin: 0 !important; padding: 0 !important; background: #fff !important; overflow: hidden !important; display: block !important; }",
+    ".tablet-stage { max-width: none !important; width: auto !important; padding: 0 !important; overflow: visible !important; display: block !important; }",
+    ".tablet-shell { background: none !important; box-shadow: none !important; padding: 0 !important; border-radius: 0 !important; width: auto !important; }",
+    ".tablet-screen { border-radius: 0 !important; }"
+  ].join("\n");
+
+  function fit() {
+    var d;
+    try { d = f.contentDocument; } catch (e) { d = null; }
+    if (!d || !d.getElementById("screen")) { stage.style.visibility = "visible"; return; }
+    if (!d.getElementById("ocrtest-fit")) {
+      var st = d.createElement("style"); st.id = "ocrtest-fit"; st.textContent = CSS; d.head.appendChild(st);
+    }
+    var scr = d.getElementById("screen");
+    var w = scr.offsetWidth, h = scr.offsetHeight;
+    if (!w || !h) return;
+    f.style.width = w + "px"; f.style.height = h + "px";
+    stage.style.width = w + "px"; stage.style.height = h + "px";
+    stage.style.marginLeft = (-w / 2) + "px"; stage.style.marginTop = (-h / 2) + "px";
+    var sideways = Math.abs(rot) % 180 === 90;
+    var rw = sideways ? h : w, rh = sideways ? w : h;
+    var s = isFinite(fixedScale) && fixedScale > 0
+      ? fixedScale
+      : Math.min(window.innerWidth / rw, window.innerHeight / rh) * 0.98;
+    stage.style.transform = "rotate(" + rot + "deg) scale(" + s + ")";
+    stage.style.visibility = "visible";
+  }
+
+  // ---- 管理画面からの遠隔操作(2026-10-09追加) ----
+  // 1台目の管理画面 -> kiosk_admin.py(POST /ocr_mock) -> ~/ocr_test/ocr_cmd.json -> ここ(1秒おきに取得)。
+  //   {"seq":N,"action":"randomize"|"reset"|"set","values":[7個の整数]}
+  // seq が増えたときだけ実行する。最初に読んだ seq は「処理済み」とみなす(ページ再読込で再実行しない)。
+  // ファイルが無い・壊れている・通信エラーのときは静かに無視する。元ページ(iframe内)の操作は同一オリジンなので直接行える。
+  var CMD_URL = "ocr_cmd.json", CMD_ROWS = 7, CMD_MAX = 9999;
+  var lastSeq = null;   // null=まだ基準を決めていない
+  function validCmd(c) {
+    if (!c || typeof c !== "object" || typeof c.seq !== "number" || !isFinite(c.seq)) return false;
+    if (c.action === "randomize" || c.action === "reset") return true;
+    if (c.action !== "set" || !Array.isArray(c.values) || c.values.length !== CMD_ROWS) return false;
+    return c.values.every(function (v) { return typeof v === "number" && v % 1 === 0 && v >= 0 && v <= CMD_MAX; });
+  }
+  function runCmd(c) {   // 実行できたら true(iframeがまだ読み込み前なら false で次回に持ち越す)
+    var d;
+    try { d = f.contentDocument; } catch (e) { d = null; }
+    if (!d || !d.getElementById("randomizeBtn")) return false;
+    if (c.action === "randomize") d.getElementById("randomizeBtn").click();
+    else if (c.action === "reset") d.getElementById("resetBtn").click();
+    else {
+      var inputs = d.querySelectorAll(".count-input");
+      if (inputs.length !== CMD_ROWS) return true;
+      for (var i = 0; i < CMD_ROWS; i++) {
+        inputs[i].value = String(c.values[i]);
+        inputs[i].dispatchEvent(new Event("input", { bubbles: true }));
+        inputs[i].dispatchEvent(new Event("change", { bubbles: true }));
+      }
+    }
+    return true;
+  }
+  function pollCmd() {
+    fetch(CMD_URL + "?t=" + Date.now(), { cache: "no-store" }).then(function (r) {
+      if (r.status === 404) { if (lastSeq === null) lastSeq = 0; return null; }   // ファイル無し: 以後に現れたものは新規
+      if (!r.ok) return null;
+      return r.json();
+    }).then(function (c) {
+      if (!validCmd(c)) return;
+      if (lastSeq === null) { lastSeq = c.seq; return; }   // 初回は基準にするだけ
+      if (c.seq <= lastSeq) return;
+      if (runCmd(c)) { lastSeq = c.seq; sendAck(true); }
+    }).catch(function () { /* 静かに無視 */ });
+  }
+  setInterval(pollCmd, 1000);
+  pollCmd();
+
+  // ---- 読み戻し(ack。2026-10-13追加) ----
+  // 管理画面が「届いたか」を確認できるように、適用したseqと、画面に実際に出ている7つの数字を
+  // kiosk_admin.py の POST /ocr_mock_ack(同じラズパイの127.0.0.1:8083。ループバック限定)へ知らせる。
+  //   実行した直後 / 数字が変わったとき(画面上で直接書き換えられた場合も) / 5秒おき(生きている印)。
+  // 失敗しても何も起きない(静かに無視。表示や操作には影響しない)。text/plainで送る(CORSのプリフライトを避けるため)。
+  var ACK_URL = "http://127.0.0.1:8083/ocr_mock_ack", ACK_HEARTBEAT_MS = 5000;
+  var lastAckKey = null, lastAckAt = 0;
+  function shownValues() {   // 画面に出ている7つの数字(読めない/空欄がある間は null)
+    var d;
+    try { d = f.contentDocument; } catch (e) { d = null; }
+    if (!d) return null;
+    var inputs = d.querySelectorAll(".count-input");
+    if (inputs.length !== CMD_ROWS) return null;
+    var out = [];
+    for (var i = 0; i < CMD_ROWS; i++) {
+      var raw = String(inputs[i].value).trim();
+      if (!/^[0-9]{1,4}$/.test(raw)) return null;
+      out.push(parseInt(raw, 10));
+    }
+    return out;
+  }
+  function sendAck(force) {
+    if (lastSeq === null) return;   // 基準のseqが決まるまでは報告しない
+    var v = shownValues();
+    if (!v) return;
+    var key = lastSeq + ":" + v.join(",");
+    var now = Date.now();
+    if (force !== true && key === lastAckKey && now - lastAckAt < ACK_HEARTBEAT_MS) return;
+    lastAckKey = key; lastAckAt = now;
+    fetch(ACK_URL, { method: "POST", headers: { "Content-Type": "text/plain" }, body: JSON.stringify({ seq: lastSeq, values: v }), cache: "no-store" })
+      .catch(function () { /* 静かに無視 */ });
+  }
+  setInterval(sendAck, 1000);
+
+  f.addEventListener("load", function () { fit(); setTimeout(fit, 300); setTimeout(fit, 1200); });
+  window.addEventListener("resize", fit);
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,54 @@
+# Windows(Docker Desktop/WSL2) / 開発PC 用 ROS 2 Humble イメージ
+#
+# Stage 1 の足回り単体試験、および開発時のロジック確認用。
+# Jetson版(Dockerfile.jetson)とはベースイメージが異なる(GPUランタイムなし)が、
+# ros2_ws の中身・launchファイルは共通で使えるようにする。
+FROM ros:humble-ros-base
+
+ENV DEBIAN_FRONTEND=noninteractive
+ENV ROS_DISTRO=humble
+ENV ROS_DOMAIN_ID=77
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ros-humble-navigation2 \
+    ros-humble-nav2-bringup \
+    ros-humble-slam-toolbox \
+    ros-humble-tf2-ros \
+    ros-humble-robot-state-publisher \
+    ros-humble-xacro \
+    ros-humble-rplidar-ros \
+    python3-colcon-common-extensions \
+    python3-rosdep \
+    python3-vcstool \
+    python3-pip \
+    python3-opencv \
+    build-essential \
+    git \
+    v4l-utils \
+    udev \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN mkdir -p /opt/micro_ros_ws/src && \
+    cd /opt/micro_ros_ws && \
+    git clone -b humble https://github.com/micro-ROS/micro-ROS-Agent.git src/micro-ROS-Agent && \
+    git clone -b humble https://github.com/micro-ROS/micro_ros_msgs.git src/micro_ros_msgs && \
+    . /opt/ros/humble/setup.sh && \
+    rosdep init 2>/dev/null || true && rosdep update && \
+    rosdep install --from-paths src --ignore-src -r -y && \
+    colcon build --symlink-install
+
+RUN python3 -m pip install --no-cache-dir ultralytics requests
+
+WORKDIR /workspace
+COPY ros2_ws /workspace/ros2_ws
+
+RUN . /opt/ros/humble/setup.sh && \
+    . /opt/micro_ros_ws/install/setup.sh && \
+    cd /workspace/ros2_ws && \
+    rosdep install --from-paths src --ignore-src -r -y && \
+    colcon build --symlink-install
+
+COPY docker/entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+ENTRYPOINT ["/entrypoint.sh"]
+CMD ["bash"]

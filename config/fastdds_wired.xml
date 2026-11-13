@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!--
+  Fast DDS(ROS 2 Jazzy, fastrtps 2.14.6)を有線NIC(enP8p1s0)のUDPだけに制限するプロファイル。
+  - インターフェースは「名前」で固定(IPではない)。スイッチングハブ導入でアドレスが変わってもそのまま使える。
+  - 同一ホスト内のノード間はSHM(共有メモリ)で通信(高速)。
+  - 使い方: export FASTRTPS_DEFAULT_PROFILES_FILE=~/mirs2603_nokosahen/config/fastdds_wired.xml
+            export RMW_FASTRTPS_USE_QOS_FROM_XML=0
+    (scripts/dds_wired_env.sh を source すると自動で設定。NOKOSAHEN_DDS_WIRED=0 で無効化)
+  - NIC名が違う機体では UDP_IFACE を書き換えるか、DDS_IFACE 環境変数は使えないのでこのXMLを編集する。
+-->
+<profiles xmlns="http://www.eprosima.com">
+  <transport_descriptors>
+    <transport_descriptor>
+      <transport_id>wired_udp</transport_id>
+      <type>UDPv4</type>
+      <interfaces>
+        <allowlist>
+          <interface name="enP8p1s0"/>
+        </allowlist>
+      </interfaces>
+    </transport_descriptor>
+    <transport_descriptor>
+      <transport_id>wired_shm</transport_id>
+      <type>SHM</type>
+    </transport_descriptor>
+  </transport_descriptors>
+
+  <participant profile_name="nokosahen_wired_participant" is_default_profile="true">
+    <rtps>
+      <useBuiltinTransports>false</useBuiltinTransports>
+      <userTransports>
+        <transport_id>wired_shm</transport_id>
+        <transport_id>wired_udp</transport_id>
+      </userTransports>
+    </rtps>
+  </participant>
+</profiles>

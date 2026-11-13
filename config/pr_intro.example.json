@@ -1,0 +1,29 @@
+{
+  "version": 1,
+  "description": "文化祭の出店紹介(仮の文の雛形)。~/.nokosahen_pr_intro.json にコピーして文章を差し替える。(仮)で始まる文は本番ではない。docs/announcements.md",
+  "enabled": false,
+  "interval_sec": 120,
+  "gap_sec": 8,
+  "volume": 1.0,
+  "quiet_when_person_near": false,
+  "parts": [
+    {
+      "enabled": true,
+      "title": "ロボットの特徴(仮)",
+      "volume": 1.0,
+      "text": "(仮)私たちの班のロボットは、お客さんにアンケートを答えてもらいながら会場を自分で動き回ります。これは仮の文章です。本番の文章に差し替えてください。"
+    },
+    {
+      "enabled": true,
+      "title": "クラスの店の紹介(仮)",
+      "volume": 1.0,
+      "text": "(仮)私たちのクラスでは、おいしい食べ物のお店を出しています。これは仮の文章です。本番の文章に差し替えてください。"
+    },
+    {
+      "enabled": true,
+      "title": "お誘い(仮)",
+      "volume": 1.0,
+      "text": "(仮)ぜひお立ち寄りください。お待ちしています。これは仮の文章です。本番の文章に差し替えてください。"
+    }
+  ]
+}

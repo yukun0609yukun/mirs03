@@ -1,0 +1,21 @@
+# 2台目Jetson: 電源を入れたら、音声スタック(Ollama・VOICEVOX・voice_bridge・BGM)を自動起動する。docs/autostart.md
+# @USER@ / @HOME@ は install_autostart.sh が置き換える。start_voice_stack.sh は、sudo不要・冪等(起動済みなら何もしない)。
+# 音を出すには、ユーザーのPipeWireセッションが要る。再起動後も立ち上がるよう、install_autostart.sh が enable-linger する。
+[Unit]
+Description=Nokosahen voice stack (Ollama + VOICEVOX + voice_bridge, auto start at boot)
+After=network.target docker.service
+Wants=docker.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+User=@USER@
+Environment=HOME=@HOME@
+WorkingDirectory=@HOME@
+ExecStart=/bin/bash @HOME@/start_voice_stack.sh
+# 起動スクリプトは、常駐プロセスを切り離して終了する。止めるときに、それらを道連れにしない。
+KillMode=process
+TimeoutStartSec=300
+
+[Install]
+WantedBy=multi-user.target

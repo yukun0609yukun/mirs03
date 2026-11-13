@@ -1,0 +1,33 @@
+# operator(弱いアカウント)の定義の雛形(コミットして良い。実値は書かないこと)。docs/accounts.md
+# 使い方: このファイルを accounts.local.yaml にコピーして、名前とハッシュを設定する。
+#   cp accounts.example.yaml accounts.local.yaml
+# accounts.local.yaml は .gitignore(*.local.yaml)で除外される。実機には同じパス、または
+# ~/.nokosahen_accounts.yaml、環境変数 NOKOSAHEN_ACCOUNTS_FILE で置く。
+#
+# 既定(このファイルが無いときも同じ)は「プレースホルダー・無効」。enabled:false の間、
+# または username が CHANGE_ME... のまま、password_hash が空のままだとログインできない。
+#
+# ハッシュの作り方:  python scripts/make_account_hash.py   (対話入力。ハッシュだけが出力される)
+accounts:
+  - username: "CHANGE_ME_OPERATOR"
+    role: operator
+    password_hash: ""
+    enabled: false
+
+# operatorに許可する操作(1つずつ足す)。既定は何も許可しない(閲覧 + 緊急停止をかける + 目的地キャンセルのみ)。
+# 付与できる名前は docs/accounts.md の一覧(例: voice.levels)。admin_only の権限を書いても起動時に無視される。
+# ※管理画面の「アカウント・権限」カードで保存した許可リスト(~/.nokosahen_operator_permissions.json)がある場合はそちらが優先。
+#
+# 【2026-10-16】高専祭向けの案: 他の班員が、TLの不在中も「スタート/シャットダウン + 現状の説明デモ + 軽く触る」ができる範囲。
+#   走行系(手動運転・速度・探索・ピン移動・位置合わせ・地図)と、設定の根幹は許可しない(admin専用のまま)。
+#   未保存の地図を捨てて終了する選択も、operatorにはできない。
+operator_permissions:
+  - voice.levels            # 発話・BGMの音量
+  - voice.master            # 音声の全体ON/OFF
+  - voice.announce_interval # 呼びかけの間隔
+  - voice.test_speak        # 試し発話(デモで説明用)
+  - announce.test           # 状況アナウンスを試しに鳴らす(デモ用)
+  - display.survey_mode     # 頭部ディスプレイの表示切替
+  - display.ocr_mock        # 模擬POSの数字
+  # display.menu_edit       # メニューの追加・名前の変更・削除・初期食数(推奨=保留。必要なoperatorにだけ許可する)。iPadの残数入力・メニュー編集は、厨房サイトと同じアカウントでの専用ログインで、ここの権限とは別(docs/ipad_display.md)
+  - system.shutdown         # プログラム終了(全停止)

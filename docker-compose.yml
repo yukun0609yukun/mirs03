@@ -1,0 +1,50 @@
+# 使い方:
+#   Jetson本番:  docker compose --profile jetson up -d
+#   Windows/Stage1: docker compose --profile x86 up
+#
+# デバイスパス(/dev/esp32, /dev/rplidar, /dev/webcam_checkout)は
+# scripts/setup_udev_rules.sh で作る固定シンボリックリンクを前提にしている。
+# 未設定の場合は先にそちらを実行すること。
+
+services:
+  nokosahen_jetson:
+    profiles: ["jetson"]
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.jetson
+    image: nokosahen:jetson
+    container_name: nokosahen_jetson
+    network_mode: host
+    runtime: nvidia
+    privileged: false
+    devices:
+      - "/dev/esp32:/dev/esp32"
+      - "/dev/rplidar:/dev/rplidar"
+      - "/dev/webcam_checkout:/dev/webcam_checkout"
+    environment:
+      - ROS_DOMAIN_ID=77
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=all
+    volumes:
+      - ./ros2_ws:/workspace/ros2_ws
+    # 【2026-10-21】unless-stopped -> "no"。旧構成(Humble)のコンテナを、一度でも `up -d` していると、1台目の起動のたびに自動で起動して、
+    # いまの構成(systemdの自動起動・start_all.sh)と並んで /dev/esp32 と /dev/rplidar を奪い合い、root所有のため mirs03 の pkill では
+    # 止められなかった。自動で再起動しない。起動ファイル(jetson_robot.launch.py)は旧構成なので、既定では止まる(NOKOSAHEN_ALLOW_LEGACY_LAUNCH=1 で通す)。
+    restart: "no"
+    command: ["ros2", "launch", "nokosahen_bringup", "jetson_robot.launch.py", "esp32_port:=/dev/esp32", "lidar_port:=/dev/rplidar"]
+
+  nokosahen_x86:
+    profiles: ["x86"]
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.x86
+    image: nokosahen:x86
+    container_name: nokosahen_x86
+    network_mode: host
+    devices:
+      - "/dev/esp32:/dev/esp32"
+    environment:
+      - ROS_DOMAIN_ID=77
+    volumes:
+      - ./ros2_ws:/workspace/ros2_ws
+    command: ["ros2", "launch", "nokosahen_bringup", "drivetrain_test.launch.py", "esp32_port:=/dev/esp32"]

@@ -1,0 +1,26 @@
+# 1台目Jetson: 電源を入れたら、手動モードのロボット(監視ループ付き)を自動起動する。docs/autostart.md
+# @USER@ / @HOME@ は install_autostart.sh が置き換える。
+[Unit]
+Description=Nokosahen robot (manual mode, auto start at boot)
+After=network.target NetworkManager.service
+Wants=NetworkManager.service
+
+[Service]
+Type=simple
+User=@USER@
+Environment=HOME=@HOME@
+WorkingDirectory=@HOME@
+ExecStart=/bin/bash @HOME@/mirs2603_nokosahen/scripts/autostart/boot_start.sh manual
+# 監視ループ自身が、落ちたROSを再起動する。systemd側では再起動しない
+# (shutdown_all.sh や stop_everything.sh で止めたあとに、勝手に復活しないようにするため)。
+Restart=no
+# shutdown_all.sh / stop_everything.sh が監視ループをSIGTERMで止めても、「失敗」扱いにしない
+SuccessExitStatus=143 SIGTERM
+TimeoutStopSec=30
+# 重要: 管理画面の「プログラム終了」で起動した shutdown_all.sh も、このサービスと同じcgroupに入る。
+# control-group(既定)だと、shutdown_all.sh が監視ループを止めた瞬間に、systemdがcgroup内の残り(shutdown_all.sh自身を含む)を
+# 道連れに止め、後続の停止・電源断が実行されない。process にして、主プロセスだけを対象にする。
+KillMode=process
+
+[Install]
+WantedBy=multi-user.target

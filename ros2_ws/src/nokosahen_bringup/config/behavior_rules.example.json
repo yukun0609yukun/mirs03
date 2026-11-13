@@ -1,0 +1,64 @@
+{
+  "version": 1,
+  "description": "behavior_director の時間帯・状況ルール表の例。全ルール enabled=false(無効)なので、このまま置いても現行動作は変わりません。使うルールだけ enabled を true にし、~/.nokosahen_behavior_rules.json へコピーしてください。詳細は docs/behavior_rules.md。ESTOP・手動運転・近接/障害物ホールド・地図作成中の停止は、どのルールでも上書きできません。",
+  "min_hold_seconds": 10,
+  "rules": [
+    {
+      "id": "lunch_peak_calling",
+      "enabled": false,
+      "name": "昼のピーク呼び込み",
+      "description": "11:30-13:00 に人が見えている/混雑している間、接近を許可し、発話を30秒間隔まで短縮して呼び込む。",
+      "priority": 50,
+      "when": {
+        "time_ranges": ["11:30-13:00"],
+        "crowd_level": ["calm", "crowded"]
+      },
+      "then": {
+        "policy": ["approach_enabled"],
+        "params": {"announce_min_interval_seconds": 30}
+      }
+    },
+    {
+      "id": "afternoon_wait_entrance",
+      "enabled": false,
+      "name": "午後は入口で待機",
+      "description": "13:30 以降は入口へ1回だけ移動し、到着後はその場で待機する(接近・見回し・揺動はしない。発話は通常どおり)。",
+      "priority": 30,
+      "when": {
+        "time_ranges": ["13:30-22:00"]
+      },
+      "then": {
+        "policy": ["go_to_entrance"],
+        "params": {}
+      }
+    },
+    {
+      "id": "closed_quiet_stay",
+      "enabled": false,
+      "name": "閉店後は静かに待機",
+      "description": "22:00-06:00(日付またぎ)は発話せず、その場から動かない。",
+      "priority": 100,
+      "when": {
+        "time_ranges": ["22:00-06:00"]
+      },
+      "then": {
+        "policy": ["quiet", "stay"],
+        "params": {}
+      }
+    },
+    {
+      "id": "low_stock_announce_boost",
+      "enabled": false,
+      "name": "残りわずかを強調",
+      "description": "いずれかのメニューの残数比が30%未満のとき、発話の最短間隔を30秒にして案内を強調する(動作は通常どおり)。",
+      "priority": 40,
+      "when": {
+        "remaining_ratio_below": 0.3
+      },
+      "then": {
+        "policy": ["normal"],
+        "params": {"announce_min_interval_seconds": 30}
+      }
+    }
+  ]
+}

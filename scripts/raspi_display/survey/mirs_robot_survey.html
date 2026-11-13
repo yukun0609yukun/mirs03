@@ -1,0 +1,513 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,user-scalable=no">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<!--PREVIEW-START-->
+<title>MIRS ロボットアンケート</title>
+<style>
+/* Layout: タブレット1画面に収まるアプリ。上=進捗、中央=質問とタイル、下=操作。
+   食堂の明るい照明下で読むため、意図的にライトテーマ1つに固定している。 */
+:root{
+  color-scheme:light;
+  --bg:#eef2f4; --surface:#ffffff; --ink:#10202a; --muted:#56656e; --line:#c9d3d8;
+  --accent:#0d6b58; --accent-ink:#ffffff; --accent-soft:#d5ece5;
+  --hi:#f2b43c; --warn:#b4432d;
+  /* 外部フォントは読み込まない。Jetson(Ubuntu) の Noto Sans CJK を優先し、無ければ OS の日本語フォント */
+  --f-display:"Noto Sans CJK JP","Noto Sans JP","Hiragino Sans","Yu Gothic UI","Meiryo",sans-serif;
+  --f-body:var(--f-display);
+  --f-mono:"DejaVu Sans Mono","Noto Sans Mono",ui-monospace,monospace;
+}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+[hidden]{display:none!important}
+html,body{height:100%}
+body{margin:0;background:var(--bg);color:var(--ink);font-family:var(--f-body);font-weight:500;overflow:hidden;user-select:none;-webkit-user-select:none;touch-action:manipulation}
+button{font:inherit;color:inherit;cursor:pointer;border:0;background:none}
+button:focus-visible{outline:4px solid var(--hi);outline-offset:3px}
+
+.screen{position:fixed;inset:0;display:flex;flex-direction:column;padding:calc(16px + env(safe-area-inset-top,0px)) max(20px,4vw) calc(16px + env(safe-area-inset-bottom,0px))}
+
+/* ---- 待機画面 ---- */
+#idle{justify-content:center;gap:clamp(20px,4vh,40px);cursor:pointer}
+#idle .tag{font-family:var(--f-mono);font-size:14px;letter-spacing:.12em;color:var(--muted)}
+#idle h1{margin:0;font-family:var(--f-display);font-weight:900;letter-spacing:-.01em;font-size:clamp(40px,8vw,84px);line-height:1.2;white-space:pre-line;text-wrap:balance}
+#idle .note{font-size:clamp(18px,2.6vw,24px);color:var(--muted)}
+#idle .go{align-self:flex-start;display:flex;align-items:center;gap:16px;background:var(--accent);color:var(--accent-ink);font-weight:900;font-size:clamp(22px,3.4vw,32px);padding:22px 40px;border-radius:999px;animation:pulse 2.4s ease-in-out infinite}
+#idle .go b{display:grid;place-items:center;width:44px;height:44px;border-radius:50%;background:var(--accent-ink);color:var(--accent);font-size:26px}
+@keyframes pulse{0%,100%{box-shadow:0 0 0 0 color-mix(in srgb,var(--accent) 45%,transparent)}50%{box-shadow:0 0 0 18px color-mix(in srgb,var(--accent) 0%,transparent)}}
+
+/* ---- 質問画面 ---- */
+.top{display:flex;align-items:center;gap:16px;min-height:44px}
+.dots{display:flex;gap:8px}
+.dots i{width:clamp(28px,5vw,56px);height:8px;border-radius:99px;background:var(--line)}
+.dots i.on{background:var(--accent)}
+.qno{font-family:var(--f-mono);font-weight:600;font-size:16px;color:var(--muted);font-variant-numeric:tabular-nums}
+.qwrap{flex:1;display:flex;flex-direction:column;justify-content:center;gap:clamp(18px,3.5vh,36px);min-height:0}
+.qlabel{margin:0;font-weight:900;font-size:clamp(28px,4.6vw,48px);line-height:1.3;text-wrap:balance}
+.qhelp{margin-top:-10px;color:var(--muted);font-size:18px}
+
+.tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,220px),1fr));gap:12px;overflow-y:auto;padding:4px}
+.tile{min-height:clamp(72px,11vh,104px);padding:14px 20px;border-radius:18px;background:var(--surface);border:3px solid var(--line);font-weight:700;font-size:clamp(20px,2.8vw,28px);text-align:left;display:flex;align-items:center;gap:14px;transition:transform .08s,background .12s,border-color .12s}
+.tile:active{transform:scale(.97)}
+.tile .ck{flex:none;width:30px;height:30px;border-radius:8px;border:3px solid var(--line);display:grid;place-items:center;font-size:20px;color:transparent}
+.tile.sel{background:var(--accent-soft);border-color:var(--accent)}
+.tile.sel .ck{background:var(--accent);border-color:var(--accent);color:var(--accent-ink)}
+.tile:disabled{opacity:.4}
+
+.scale{display:grid;grid-template-columns:repeat(var(--n),1fr);gap:12px}
+.scale .tile{flex-direction:column;justify-content:center;text-align:center;gap:6px;min-height:clamp(110px,22vh,180px);padding:12px 6px;font-family:var(--f-mono);font-size:clamp(26px,4vw,40px)}
+.scale svg{width:clamp(48px,8vw,84px);height:auto}
+.ends{display:flex;justify-content:space-between;font-size:clamp(16px,2vw,20px);color:var(--muted);font-weight:700}
+
+.bottom{display:flex;gap:12px;align-items:center;min-height:72px}
+.btn{min-height:64px;padding:0 28px;border-radius:16px;font-weight:700;font-size:22px;border:3px solid var(--line);background:var(--surface)}
+.btn.primary{margin-left:auto;background:var(--accent);border-color:var(--accent);color:var(--accent-ink);min-width:200px}
+.btn.ghost{background:none;border-color:transparent;color:var(--muted)}
+.btn:disabled{opacity:.35}
+
+/* ---- 完了 ---- */
+#done{justify-content:center;align-items:center;text-align:center;gap:24px}
+#done .ok{width:120px;height:120px;border-radius:50%;background:var(--accent);color:var(--accent-ink);display:grid;place-items:center;font-size:64px;font-weight:900}
+#done h2{margin:0;font-family:var(--f-display);font-weight:900;font-size:clamp(36px,6vw,64px)}
+#done p{margin:0;color:var(--muted);font-size:20px}
+
+/* ---- 管理 ---- */
+#adminHit{position:fixed;top:0;right:0;width:72px;height:72px;z-index:5}
+.sheet{position:fixed;inset:0;background:color-mix(in srgb,var(--ink) 55%,transparent);display:grid;place-items:center;z-index:10;padding:16px}
+.panel{background:var(--surface);border-radius:20px;padding:24px;width:min(560px,100%);max-height:100%;overflow-y:auto;display:grid;gap:18px;user-select:text;-webkit-user-select:text}
+.panel h3{margin:0;font-size:22px}
+.panel label{display:grid;gap:6px;font-weight:700;font-size:15px}
+.panel select,.panel input{font:inherit;font-size:18px;padding:12px;border-radius:12px;border:2px solid var(--line);background:var(--surface);color:var(--ink)}
+.stats{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}
+.stats div{background:var(--bg);border-radius:12px;padding:12px;display:grid}
+.stats b{font-family:var(--f-mono);font-size:28px;font-variant-numeric:tabular-nums}
+.stats span{font-size:13px;color:var(--muted)}
+.row{display:flex;flex-wrap:wrap;gap:10px}
+.row .btn{font-size:17px;min-height:52px;padding:0 18px;flex:1 1 auto}
+.btn.danger{color:var(--warn);border-color:var(--warn)}
+.msg{font-size:14px;color:var(--muted);min-height:1.4em}
+.pin{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}
+.pin .btn{font-family:var(--f-mono);font-size:26px;min-height:64px}
+.pinshow{font-family:var(--f-mono);font-size:32px;letter-spacing:.4em;text-align:center;min-height:44px}
+.condbar{position:fixed;left:max(20px,4vw);bottom:calc(10px + env(safe-area-inset-bottom,0px));font-family:var(--f-mono);font-size:12px;color:var(--muted);opacity:.7}
+@media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+</style>
+</head>
+<body>
+
+<section class="screen" id="idle" role="button" tabindex="0" aria-label="アンケートをはじめる">
+  <div class="tag">MIRS2603 ・ QUESTIONNAIRE</div>
+  <h1 id="idleTitle"></h1>
+  <div class="note" id="idleNote"></div>
+  <div class="go"><b aria-hidden="true">→</b><span id="startLabel"></span></div>
+</section>
+
+<section class="screen" id="ask" hidden>
+  <div class="top"><div class="dots" id="dots"></div><span class="qno" id="qno"></span></div>
+  <div class="qwrap" id="qwrap"></div>
+  <div class="bottom">
+    <button class="btn" id="back" type="button">← もどる</button>
+    <button class="btn ghost" id="skip" type="button">とばす</button>
+    <button class="btn primary" id="next" type="button">つぎへ →</button>
+  </div>
+</section>
+
+<section class="screen" id="done" hidden>
+  <div class="ok" aria-hidden="true">✓</div>
+  <h2 id="thanks"></h2>
+  <p id="doneNote"></p>
+</section>
+
+<div class="condbar" id="condbar"></div>
+<button id="adminHit" type="button" aria-label="管理"></button>
+
+<div class="sheet" id="pinSheet" hidden>
+  <div class="panel">
+    <h3>管理用 PIN</h3>
+    <div class="pinshow" id="pinShow"></div>
+    <div class="pin" id="pinPad"></div>
+    <div class="msg" id="pinMsg"></div>
+  </div>
+</div>
+
+<div class="sheet" id="adminSheet" hidden>
+  <div class="panel">
+    <h3>管理画面</h3>
+    <div class="stats">
+      <div><b id="stTotal">0</b><span>保存した回答</span></div>
+      <div><b id="stToday">0</b><span>今日の回答</span></div>
+      <div><b id="stPending">0</b><span>未送信</span></div>
+    </div>
+    <label for="condSel">実験条件 (以後の回答に記録)
+      <select id="condSel"></select>
+    </label>
+    <label for="locIn">設置場所・メモ
+      <input id="locIn" type="text" placeholder="例: 食堂入口 / 第1展示室">
+    </label>
+    <div class="row">
+      <button class="btn" id="aSync" type="button">今すぐ再送</button>
+      <button class="btn" id="aCsv" type="button">CSV を保存</button>
+      <button class="btn" id="aFull" type="button">全画面</button>
+    </div>
+    <div class="row">
+      <button class="btn danger" id="aClear" type="button">端末内の回答を消去</button>
+    </div>
+    <div class="msg" id="aMsg"></div>
+    <div class="row"><button class="btn primary" id="aClose" type="button">閉じる</button></div>
+  </div>
+</div>
+
+<script>
+/* =====================================================================
+ * 設定 (この <script> の中だけを編集すれば設問を変えられます)
+ * ---------------------------------------------------------------------
+ * 立ったまま 30 秒ほどで答えられる量 (3〜5問) を目安にしてください。
+ * 1画面に1問ずつ表示し、1つ選ぶタイプは押した瞬間に次へ進みます。
+ *
+ * ■ 設問タイプ (type)
+ *   "choice" … 1つ選ぶ (押すと自動で次へ)          options 必須
+ *   "multi"  … 複数選ぶ (「次へ」ボタンで進む)      options 必須 / maxSelect で上限
+ *   "scale"  … 段階評価 (押すと自動で次へ)          min, max, minLabel, maxLabel
+ *              faces: true で 5段階の顔アイコン表示 (min:1, max:5 のときのみ)
+ *
+ * ■ 共通オプション
+ *   id       … 集計の列名。英数字と _ のみ。途中で変えないこと。
+ *   label    … 質問文 (短く。1〜2行に収まる長さ)
+ *   skippable… true で「とばす」ボタンを表示 (初期値 true)
+ *   showIf   … 条件付き表示 { id, equals } / { id, in: [...] } / { id, includes }
+ * ===================================================================== */
+
+window.ROBOT_SURVEY = {
+  version: "r1",
+  sheet: "robot",              // Google スプレッドシートに送る場合のシート名
+
+  // 待機画面
+  idleTitle: "ロボットについて\n教えてください",
+  idleNote: "4つの質問 ・ 約30秒",
+  startLabel: "タッチして はじめる",
+  thanks: "ありがとうございました！",
+
+  // 回答の送り先
+  //   "auto" … receiver.py から開いたときは Jetson に保存、ファイルを直接開いたときはブラウザ内に保存
+  //   []     … 常にブラウザ内に保存するだけ (管理画面から CSV 出力)
+  //   ["/api/responses", "https://script.google.com/..."] … 送り先を明示 (複数可)
+  endpoints: "auto",
+
+  // ロボットへの通知。"auto" なら receiver.py 経由のときだけ /api/session/start, end を呼ぶ。
+  // 不要なら { start: "", end: "" }
+  robotHooks: "auto",
+
+  idleTimeoutSec: 30,          // 回答途中で放置されたら待機画面へ戻るまでの秒数
+  doneReturnSec: 5,            // 完了画面から待機画面へ戻るまでの秒数
+
+  // 管理画面: 画面右上の角を 3 秒以内に 5 回タップ → PIN 入力
+  adminPin: "2603",
+
+  // 実験条件。管理画面で切り替えると、以後の回答すべてに記録されます。
+  conditions: ["停止 + 音声", "移動 + 音声", "移動のみ", "展示 (高専祭)"],
+
+  questions: [
+    {
+      id: "noticed_by",
+      type: "choice",
+      label: "ロボットに気づいたきっかけは？",
+      options: ["動いていたから", "声が聞こえたから", "画面が見えたから", "人が集まっていたから", "たまたま"],
+    },
+    {
+      id: "impression",
+      type: "scale",
+      label: "ロボットの印象は？",
+      min: 1,
+      max: 5,
+      faces: true,
+      minLabel: "よくない",
+      maxLabel: "とてもよい",
+    },
+    {
+      id: "approach_feel",
+      type: "multi",
+      label: "近づいてきたとき、どう感じましたか？",
+      options: ["楽しい", "気にならない", "少しこわい", "じゃまに感じた", "近づいてこなかった"],
+      maxSelect: 2,
+    },
+    {
+      id: "visitor_type",
+      type: "choice",
+      label: "あなたは？",
+      options: ["小学生", "中学生", "高校・高専生", "大人"],
+    },
+  ],
+};
+</script>
+<script>
+(function(){
+  const C = window.ROBOT_SURVEY;
+  const served = /^https?:$/.test(location.protocol); // receiver.py などのサーバ経由で開いたか
+  if(C.endpoints === "auto") C.endpoints = served ? ["/api/responses"] : [];
+  if(C.robotHooks === "auto") C.robotHooks = served ? {start:"/api/session/start", end:"/api/session/end"} : {start:"", end:""};
+  const $ = id => document.getElementById(id);
+  const KEY = "mirs_robot_survey";
+  let ans = {}, idx = 0, path = [], idleTimer = null, doneTimer = null, startedAt = null, lastFinishedId = null;
+
+  /* ---------- 保存 (タブレット内) ---------- */
+  function load(){ try{ return Object.assign({records:[], condition:C.conditions[0]||"", location:""}, JSON.parse(localStorage.getItem(KEY)||"{}")); }catch(e){ return {records:[], condition:C.conditions[0]||"", location:""}; } }
+  function save(){ try{ localStorage.setItem(KEY, JSON.stringify(store)); }catch(e){} }
+  let store = load();
+
+  /* ---------- 表示テキスト ---------- */
+  $("idleTitle").textContent = C.idleTitle;
+  $("idleNote").textContent = C.idleNote || "";
+  $("startLabel").textContent = C.startLabel;
+  $("thanks").textContent = C.thanks;
+  function showCond(){ $("condbar").textContent = [store.condition, store.location].filter(Boolean).join(" ・ "); }
+  // [のこさへん追加] 実験条件を receiver.py に伝える(管理画面の「アンケート」カードに表示される)
+  function notifyCond(){ if(C.robotHooks && C.robotHooks.start) fetch("/api/condition?c=" + encodeURIComponent(store.condition || ""), {mode:"no-cors"}).catch(()=>{}); }
+  showCond(); notifyCond();
+
+  function show(id){ ["idle","ask","done"].forEach(s => $(s).hidden = s !== id); }
+  function hook(kind){ const u = C.robotHooks && C.robotHooks[kind]; if(u) fetch(u + "?condition=" + encodeURIComponent(store.condition || ""), {mode:"no-cors"}).catch(()=>{}); }
+
+  /* ---------- 条件付き表示 ---------- */
+  function cond(c){
+    if(!c) return true;
+    const v = ans[c.id];
+    if(c.equals !== undefined) return v === c.equals;
+    if(c.in) return c.in.includes(v);
+    if(c.includes !== undefined) return Array.isArray(v) && v.includes(c.includes);
+    return true;
+  }
+  const visible = () => C.questions.filter(q => cond(q.showIf));
+
+  /* ---------- 放置タイマー ---------- */
+  function poke(){
+    clearTimeout(idleTimer);
+    // [のこさへん追加] 回答中は5秒ごとに「まだ回答中」と receiver.py に伝える(無通信が長く続いた時だけ receiver が放棄扱いにする。既定120秒)
+    if(!$("ask").hidden && Date.now() - (poke.beat || 0) > 5000){ poke.beat = Date.now(); hook("start"); }
+    if(!$("ask").hidden) idleTimer = setTimeout(() => { hook("end"); toIdle(); }, C.idleTimeoutSec*1000);
+  }
+  ["pointerdown","keydown"].forEach(ev => document.addEventListener(ev, poke, {passive:true}));
+
+  function toIdle(){ clearTimeout(idleTimer); clearTimeout(doneTimer); ans = {}; idx = 0; show("idle"); }
+
+  function start(){
+    ans = {}; idx = 0; startedAt = Date.now();
+    hook("start");
+    show("ask"); render(); poke();
+  }
+  $("idle").addEventListener("click", start);
+  $("idle").addEventListener("keydown", e => { if(e.key === "Enter" || e.key === " ") start(); });
+
+  /* ---------- 顔アイコン ---------- */
+  function face(level){ // 1..5
+    const curve = [-10,-5,0,5,10][level-1];
+    const mouth = `M30 ${66-curve/2} Q50 ${66+curve} 70 ${66-curve/2}`;
+    return `<svg viewBox="0 0 100 100" aria-hidden="true"><circle cx="50" cy="50" r="44" fill="none" stroke="currentColor" stroke-width="6"/><circle cx="35" cy="40" r="6" fill="currentColor"/><circle cx="65" cy="40" r="6" fill="currentColor"/><path d="${mouth}" fill="none" stroke="currentColor" stroke-width="6" stroke-linecap="round"/></svg>`;
+  }
+
+  /* ---------- 描画 ---------- */
+  function render(){
+    const qs = visible(), q = qs[idx];
+    $("dots").innerHTML = qs.map((_,i) => `<i class="${i<=idx?"on":""}"></i>`).join("");
+    $("qno").textContent = `${idx+1} / ${qs.length}`;
+    const w = $("qwrap"); w.textContent = "";
+    const h = document.createElement("h2"); h.className = "qlabel"; h.textContent = q.label; w.append(h);
+    if(q.help){ const p = document.createElement("div"); p.className = "qhelp"; p.textContent = q.help; w.append(p); }
+
+    if(q.type === "scale"){
+      const min = q.min ?? 1, max = q.max ?? 5, useFace = q.faces && min === 1 && max === 5;
+      const g = document.createElement("div"); g.className = "scale"; g.style.setProperty("--n", max-min+1);
+      for(let v=min; v<=max; v++){
+        const b = document.createElement("button"); b.type = "button"; b.className = "tile" + (ans[q.id]===v?" sel":"");
+        b.setAttribute("aria-label", `${v}`);
+        b.innerHTML = (useFace ? face(v) : "") + `<span>${v}</span>`;
+        b.addEventListener("click", () => { ans[q.id] = v; mark(g, b); advanceSoon(); });
+        g.append(b);
+      }
+      w.append(g);
+      const e = document.createElement("div"); e.className = "ends";
+      e.innerHTML = "<span></span><span></span>"; e.children[0].textContent = q.minLabel||""; e.children[1].textContent = q.maxLabel||"";
+      w.append(e);
+    } else {
+      const g = document.createElement("div"); g.className = "tiles";
+      q.options.forEach(o => {
+        const b = document.createElement("button"); b.type = "button"; b.className = "tile";
+        const ck = document.createElement("span"); ck.className = "ck"; ck.textContent = "✓"; ck.setAttribute("aria-hidden","true");
+        const t = document.createElement("span"); t.textContent = o;
+        if(q.type === "multi") b.append(ck);
+        b.append(t);
+        const cur = ans[q.id];
+        if(q.type === "multi" ? (cur||[]).includes(o) : cur === o) b.classList.add("sel");
+        b.addEventListener("click", () => {
+          if(q.type === "multi"){
+            const s = new Set(ans[q.id]||[]);
+            s.has(o) ? s.delete(o) : s.add(o);
+            ans[q.id] = q.options.filter(x => s.has(x));
+            b.classList.toggle("sel", s.has(o));
+            limit(g, q); nav();
+          } else { ans[q.id] = o; mark(g, b); advanceSoon(); }
+        });
+        g.append(b);
+      });
+      w.append(g);
+      if(q.type === "multi") limit(g, q);
+    }
+    nav();
+  }
+  function mark(g, b){ g.querySelectorAll(".tile").forEach(x => x.classList.toggle("sel", x === b)); }
+  function limit(g, q){
+    if(!q.maxSelect) return;
+    const full = (ans[q.id]||[]).length >= q.maxSelect;
+    g.querySelectorAll(".tile").forEach(b => b.disabled = full && !b.classList.contains("sel"));
+  }
+  function nav(){
+    const qs = visible(), q = qs[idx], last = idx === qs.length-1;
+    $("back").disabled = idx === 0;
+    $("skip").hidden = q.skippable === false;
+    const answered = q.type === "multi" ? (ans[q.id]||[]).length > 0 : ans[q.id] !== undefined;
+    // 1つ選ぶタイプは自動で進むので、回答済みで戻ってきたときだけ「つぎへ」を出す
+    $("next").hidden = q.type !== "multi" && !answered;
+    $("next").disabled = q.type === "multi" && !answered;
+    $("next").textContent = last ? "おわる ✓" : "つぎへ →";
+  }
+
+  let advTimer = null;
+  function advanceSoon(){ clearTimeout(advTimer); advTimer = setTimeout(next, 280); }
+  function next(){
+    clearTimeout(advTimer);
+    const qs = visible();
+    if(idx < qs.length-1){ idx++; render(); } else finish();
+  }
+  $("next").addEventListener("click", next);
+  $("skip").addEventListener("click", () => { delete ans[visible()[idx].id]; next(); });
+  $("back").addEventListener("click", () => { if(idx > 0){ idx--; render(); } });
+
+  /* ---------- 完了・送信 ---------- */
+  function finish(){
+    const answers = {};
+    visible().forEach(q => { if(ans[q.id] !== undefined) answers[q.id] = ans[q.id]; });
+    const rec = {
+      response_id: crypto.randomUUID ? crypto.randomUUID() : Date.now().toString(36)+Math.random().toString(36).slice(2),
+      submitted_at: new Date().toISOString(),
+      survey_version: C.version,
+      mode: "robot",
+      condition: store.condition,
+      location: store.location,
+      duration_sec: Math.round((Date.now()-startedAt)/1000),
+      answers, _synced: false
+    };
+    store.records.push(rec); save();
+    // [のこさへん] ここで end は送らない。回答が receiver に保存できた時(POST成功)に receiver が「保存完了」にする
+    lastFinishedId = rec.response_id;
+    clearTimeout(idleTimer);
+    show("done");
+    $("doneNote").textContent = "";
+    doneTimer = setTimeout(toIdle, C.doneReturnSec*1000);
+    sync();
+  }
+
+  function payload(r){ const {_synced, ...p} = r; p.sheet = C.sheet; return p; }
+  async function sendTo(url, r){
+    const body = JSON.stringify(payload(r));
+    // [のこさへん追加] 今の回答者の完了(直前に終えた回答)以外の再送は ?replay=1 を付け、保存完了の通知にしない
+    if(url.charAt(0) === "/" && !(r.response_id === lastFinishedId && $("ask").hidden)) url += "?replay=1";
+    if(/script\.google\.com/.test(url)){
+      await fetch(url, {method:"POST", mode:"no-cors", headers:{"Content-Type":"text/plain;charset=utf-8"}, body});
+      return true; // GAS は応答を読めないため、通信できれば成功とみなす (重複は GAS 側で除外)
+    }
+    const res = await fetch(url, {method:"POST", headers:{"Content-Type":"application/json"}, body});
+    return res.ok;
+  }
+  let syncing = false;
+  async function sync(){
+    if(syncing || !C.endpoints || !C.endpoints.length) return;
+    syncing = true;
+    try{
+      for(const r of store.records.filter(r => !r._synced)){
+        let ok = true;
+        for(const u of C.endpoints){ try{ if(!(await sendTo(u, r))) ok = false; }catch(e){ ok = false; } }
+        if(ok){ r._synced = true; save(); } else break; // つながらない間は無理に続けない
+      }
+    } finally { syncing = false; stats(); }
+  }
+  window.addEventListener("online", sync);
+  setInterval(sync, 60000);
+
+  /* ---------- CSV ---------- */
+  function csv(){
+    const ids = [...new Set([...C.questions.map(q=>q.id), ...store.records.flatMap(r=>Object.keys(r.answers||{}))])];
+    const head = ["response_id","submitted_at","survey_version","condition","location","duration_sec","synced", ...ids];
+    const esc = v => { v = v == null ? "" : Array.isArray(v) ? v.join(" / ") : String(v); if(/^[=+\-@]/.test(v)) v = "'"+v; return /[",\n]/.test(v) ? `"${v.replace(/"/g,'""')}"` : v; };
+    const rows = store.records.map(r => [r.response_id, r.submitted_at, r.survey_version, r.condition, r.location, r.duration_sec, r._synced?"1":"0", ...ids.map(i => (r.answers||{})[i])].map(esc).join(","));
+    return "﻿" + [head.join(","), ...rows].join("\r\n");
+  }
+
+  /* ---------- 管理画面 ---------- */
+  let taps = [];
+  $("adminHit").addEventListener("click", e => {
+    e.stopPropagation();
+    const now = Date.now(); taps = taps.filter(t => now-t < 3000); taps.push(now);
+    if(taps.length >= 5){ taps = []; openPin(); }
+  });
+  let pin = "";
+  ["1","2","3","4","5","6","7","8","9","取消","0","OK"].forEach(k => {
+    const b = document.createElement("button"); b.type = "button"; b.className = "btn"; b.textContent = k;
+    b.addEventListener("click", () => {
+      if(k === "取消"){ $("pinSheet").hidden = true; return; }
+      if(k === "OK"){
+        if(pin === String(C.adminPin)){ $("pinSheet").hidden = true; openAdmin(); }
+        else { $("pinMsg").textContent = "PIN が違います"; pin = ""; }
+      } else if(pin.length < 8) pin += k;
+      $("pinShow").textContent = "●".repeat(pin.length);
+    });
+    $("pinPad").append(b);
+  });
+  function openPin(){ pin = ""; $("pinShow").textContent = ""; $("pinMsg").textContent = ""; $("pinSheet").hidden = false; clearTimeout(idleTimer); clearTimeout(doneTimer); }
+
+  C.conditions.forEach(c => { const o = document.createElement("option"); o.value = o.textContent = c; $("condSel").append(o); });
+  function stats(){
+    const today = new Date().toDateString();
+    $("stTotal").textContent = store.records.length;
+    $("stToday").textContent = store.records.filter(r => new Date(r.submitted_at).toDateString() === today).length;
+    $("stPending").textContent = C.endpoints && C.endpoints.length ? store.records.filter(r => !r._synced).length : "—";
+  }
+  function openAdmin(){
+    $("condSel").value = store.condition; $("locIn").value = store.location || "";
+    $("aMsg").textContent = C.endpoints && C.endpoints.length ? "" : "回答はこのブラウザ内にだけ保存されています。定期的に「CSV を保存」で書き出してください。";
+    stats(); $("adminSheet").hidden = false;
+  }
+  $("condSel").addEventListener("change", e => { store.condition = e.target.value; save(); showCond(); notifyCond(); });
+  $("locIn").addEventListener("input", e => { store.location = e.target.value; save(); showCond(); });
+  $("aSync").addEventListener("click", async () => { $("aMsg").textContent = "送信中…"; await sync(); $("aMsg").textContent = `未送信 ${store.records.filter(r=>!r._synced).length} 件`; });
+  $("aCsv").addEventListener("click", () => {
+    const blob = new Blob([csv()], {type:"text/csv"});
+    const a = document.createElement("a");
+    const d = new Date(), pad = n => String(n).padStart(2,"0");
+    a.href = URL.createObjectURL(blob);
+    a.download = `robot_survey_${d.getFullYear()}${pad(d.getMonth()+1)}${pad(d.getDate())}_${pad(d.getHours())}${pad(d.getMinutes())}.csv`;
+    document.body.append(a); a.click(); a.remove();
+    $("aMsg").textContent = `${store.records.length} 件を CSV に保存しました (ダウンロードフォルダ)`;
+  });
+  $("aFull").addEventListener("click", () => { document.documentElement.requestFullscreen?.().catch(()=>{ $("aMsg").textContent = "この端末では全画面にできません。ホーム画面に追加して起動してください。"; }); });
+  let clearArmed = false;
+  $("aClear").addEventListener("click", () => {
+    const pending = store.records.filter(r => !r._synced).length;
+    if(!clearArmed){
+      clearArmed = true;
+      $("aClear").textContent = "本当に消去する (もう一度押す)";
+      $("aMsg").textContent = `${store.records.length} 件を消去します` + (pending && C.endpoints.length ? `。うち ${pending} 件は未送信です。先に CSV を保存してください。` : "。");
+      setTimeout(() => { clearArmed = false; $("aClear").textContent = "端末内の回答を消去"; }, 5000);
+      return;
+    }
+    store.records = []; save(); stats(); clearArmed = false;
+    $("aClear").textContent = "端末内の回答を消去"; $("aMsg").textContent = "消去しました";
+  });
+  $("aClose").addEventListener("click", () => { $("adminSheet").hidden = true; if(!$("done").hidden) toIdle(); poke(); });
+
+  sync();
+})();
+</script>
+<!--PREVIEW-END-->
+</body>
+</html>

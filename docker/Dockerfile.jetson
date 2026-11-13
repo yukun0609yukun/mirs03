@@ -1,0 +1,63 @@
+# Jetson Orin Nano 用 ROS 2 Humble イメージ
+#
+# ベースイメージは x86 向けの公式 ros:humble ではなく、Jetson の L4T/JetPack
+# バージョンに対応した aarch64 + CUDA 対応イメージを使うこと。
+# dusty-nv/jetson-containers が提供する ros:humble-desktop-l4t-r36.x 系、
+# もしくは nvcr.io の l4t-jetpack 系イメージをベースにする想定。
+# 実際に使う JetPack のバージョンに合わせて BASE_IMAGE を差し替える。
+ARG BASE_IMAGE=dustynv/ros:humble-desktop-l4t-r36.3.0
+FROM ${BASE_IMAGE}
+
+ENV DEBIAN_FRONTEND=noninteractive
+ENV ROS_DISTRO=humble
+ENV ROS_DOMAIN_ID=77
+
+# scripts/install_robot_base_ubuntu.sh と揃えたパッケージ一式
+# (ベースイメージに ROS 2 本体は既に入っている前提なので、ここでは
+#  nokosahen が追加で必要とするものだけ入れる)
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ros-humble-navigation2 \
+    ros-humble-nav2-bringup \
+    ros-humble-slam-toolbox \
+    ros-humble-tf2-ros \
+    ros-humble-robot-state-publisher \
+    ros-humble-xacro \
+    ros-humble-rplidar-ros \
+    python3-colcon-common-extensions \
+    python3-rosdep \
+    python3-vcstool \
+    python3-pip \
+    python3-opencv \
+    build-essential \
+    git \
+    v4l-utils \
+    udev \
+    && rm -rf /var/lib/apt/lists/*
+
+# micro-ROS Agent (ESP32 とのシリアル通信を ROS 2 トピックへ橋渡しする)
+RUN mkdir -p /opt/micro_ros_ws/src && \
+    cd /opt/micro_ros_ws && \
+    git clone -b humble https://github.com/micro-ROS/micro-ROS-Agent.git src/micro-ROS-Agent && \
+    git clone -b humble https://github.com/micro-ROS/micro_ros_msgs.git src/micro_ros_msgs && \
+    . /opt/ros/humble/setup.sh && \
+    rosdep update && \
+    rosdep install --from-paths src --ignore-src -r -y && \
+    colcon build --symlink-install
+
+# YOLO推論 (person_target_detector / camera_counter)
+RUN python3 -m pip install --no-cache-dir ultralytics requests
+
+WORKDIR /workspace
+COPY ros2_ws /workspace/ros2_ws
+
+RUN . /opt/ros/humble/setup.sh && \
+    . /opt/micro_ros_ws/install/setup.sh && \
+    cd /workspace/ros2_ws && \
+    rosdep update && \
+    rosdep install --from-paths src --ignore-src -r -y && \
+    colcon build --symlink-install
+
+COPY docker/entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+ENTRYPOINT ["/entrypoint.sh"]
+CMD ["bash"]

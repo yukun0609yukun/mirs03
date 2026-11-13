@@ -1,0 +1,4 @@
+*.sh text eol=lf
+ros2_ws/src/nokosahen_core/nokosahen_core/behavior_tree_page.py text eol=lf
+ros2_ws/src/nokosahen_core/nokosahen_core/voice_settings_page.py text eol=lf
+ros2_ws/src/nokosahen_core/nokosahen_core/nav_speed.py text eol=lf

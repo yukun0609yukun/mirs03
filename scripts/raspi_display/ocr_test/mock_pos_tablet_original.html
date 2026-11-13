@@ -1,0 +1,299 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>模擬POSタブレット</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+JP:wght@400;500;600;700&family=IBM+Plex+Mono:wght@600;700&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #eef1f0;
+    --ink: #1b2321;
+    --ink-dim: #57645e;
+    --panel: #ffffff;
+    --line: #d7ddd8;
+    --accent: #1f6f4a;
+    --accent-ink: #ffffff;
+    /* 実物の明電舎タブレット(7インチ級)の画面サイズ。縦横比3:4.2を維持した
+       まま対角線が7インチになる寸法(103.35mm x 144.68mm)。
+       OS/ブラウザの表示倍率やパネル解像度でズレることがあるため、
+       下の「実寸調整」スライダーで--calibを補正できる。 */
+    --screen-w: 103.35mm;
+    --screen-h: 144.68mm;
+    --calib: 1;
+    color-scheme: light;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #12181a;
+      --ink: #e7ece9;
+      --ink-dim: #9fb0a8;
+      --panel: #182220;
+      --line: #2c3733;
+      --accent: #55c793;
+      --accent-ink: #0b1a14;
+      color-scheme: dark;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #12181a;
+    --ink: #e7ece9;
+    --ink-dim: #9fb0a8;
+    --panel: #182220;
+    --line: #2c3733;
+    --accent: #55c793;
+    --accent-ink: #0b1a14;
+    color-scheme: dark;
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--ink);
+    font-family: "IBM Plex Sans JP", system-ui, sans-serif;
+    font-size: 14px;
+    padding: 24px 16px 48px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 22px;
+  }
+
+  .intro { max-width: 520px; text-align: center; }
+  .intro h1 { font-size: 18px; margin: 0 0 6px; }
+  .intro p { font-size: 13px; color: var(--ink-dim); line-height: 1.7; margin: 0; }
+
+  /* ===== 模擬タブレット本体(7インチ実寸、縦向き) ===== */
+  .tablet-stage {
+    width: 100%;
+    max-width: 520px;
+    overflow-x: auto;
+    display: flex;
+    justify-content: center;
+    padding: 4px 0;
+  }
+  .tablet-shell {
+    background: #17181a;
+    border-radius: calc(7.94mm * var(--calib));
+    padding: calc(5.29mm * var(--calib)) calc(3.7mm * var(--calib));
+    box-shadow: 0 18px 40px rgba(0,0,0,0.25);
+    width: calc(var(--screen-w) * var(--calib) + calc(3.7mm * var(--calib) * 2));
+    flex: none;
+  }
+  .tablet-screen {
+    background: #ffffff;
+    border-radius: calc(2.12mm * var(--calib));
+    overflow: hidden;
+    width: calc(var(--screen-w) * var(--calib));
+    height: calc(var(--screen-h) * var(--calib));
+    display: flex;
+    flex-direction: column;
+  }
+  .row {
+    flex: 1 1 0;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 0 4% 0 3%;
+    border-bottom: 1px solid #ffffff;
+  }
+  .row:nth-child(odd) { background: #eaf2fb; }
+  .row:nth-child(even) { background: #dbe9f8; }
+
+  .badge {
+    flex: 0 0 auto;
+    width: 8%;
+    aspect-ratio: 1;
+    min-width: 18px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: #fff;
+    font-weight: 700;
+    font-size: clamp(8px, 2.6vw, 15px);
+  }
+  .row:nth-child(1) .badge { background: #4a3f8c; }
+  .row:nth-child(2) .badge { background: #3d4e9e; }
+  .row:nth-child(3) .badge { background: #8b3a86; }
+  .row:nth-child(4) .badge { background: #b0447a; }
+  .row:nth-child(5) .badge { background: #6a4aa8; }
+  .row:nth-child(6) .badge { background: #3f5aa8; }
+  .row:nth-child(7) .badge { background: #4a4a4a; }
+
+  .menu-name {
+    flex: 1 1 auto;
+    font-size: clamp(10px, 3.1vw, 17px);
+    color: #1c1c1e;
+    font-weight: 500;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .menu-name[contenteditable="true"]:focus { outline: 1px dashed #99a; background: rgba(255,255,255,0.5); }
+
+  .count-input {
+    flex: 0 0 auto;
+    width: 34%;
+    border: none;
+    background: transparent;
+    text-align: right;
+    font-family: "IBM Plex Mono", ui-monospace, monospace;
+    font-variant-numeric: tabular-nums;
+    font-weight: 700;
+    font-size: clamp(16px, 7.2vw, 40px);
+    color: #b6452c;
+    padding: 0;
+    -moz-appearance: textfield;
+  }
+  .count-input::-webkit-outer-spin-button,
+  .count-input::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+  .count-input:focus { outline: 2px solid #b6452c33; border-radius: 4px; }
+
+  /* ===== 操作パネル・実寸調整パネル ===== */
+  .panel {
+    width: min(92vw, 460px);
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    padding: 14px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+  .panel h2 { margin: 0; font-size: 13px; color: var(--ink-dim); }
+  .panel .row-buttons { display: flex; gap: 8px; flex-wrap: wrap; }
+  button {
+    padding: 9px 14px;
+    font-size: 13px;
+    font-weight: 600;
+    border: 0;
+    border-radius: 8px;
+    background: var(--accent);
+    color: var(--accent-ink);
+    cursor: pointer;
+    flex: 1 1 auto;
+    font-family: inherit;
+  }
+  button.secondary { background: var(--line); color: var(--ink); }
+  .hint { font-size: 12px; color: var(--ink-dim); line-height: 1.6; margin: 0; }
+
+  .calib-card {
+    width: calc(85.6mm * var(--calib));
+    height: calc(53.98mm * var(--calib));
+    max-width: 100%;
+    margin: 4px auto 0;
+    border: 2px dashed var(--accent);
+    border-radius: calc(3.18mm * var(--calib));
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    text-align: center;
+    padding: 6px;
+  }
+  .calib-card span { font-size: 11px; color: var(--ink-dim); }
+  .calib-slider-row { display: flex; align-items: center; gap: 10px; }
+  .calib-slider-row input[type="range"] { flex: 1 1 auto; }
+  .calib-value {
+    font-family: "IBM Plex Mono", ui-monospace, monospace;
+    font-size: 13px;
+    font-variant-numeric: tabular-nums;
+    min-width: 4.5em;
+    text-align: right;
+  }
+</style>
+</head>
+<body>
+
+<div class="intro">
+  <h1>模擬POSタブレット(OCR認識テスト用・7インチ実寸)</h1>
+  <p>実物の明電舎タブレット画面を模した表示です。15.6インチのパソコン画面で開いたとき実物と同じ約7インチで表示されるよう寸法を計算していますが、パソコンの表示倍率や画面のドット密度で誤差が出ることがあるため、下の「実寸調整」でカードを使って合わせてください。数字はクリックして書き換えられます。この画面をWebカメラの前に置いて、tablet_ocr_reader.pyの認識テストに使ってください。</p>
+</div>
+
+<div class="tablet-stage">
+  <div class="tablet-shell">
+    <div class="tablet-screen" id="screen">
+      <div class="row"><div class="badge">1</div><div class="menu-name" contenteditable="true">Aランチ</div><input class="count-input" type="text" inputmode="numeric" value="118"></div>
+      <div class="row"><div class="badge">2</div><div class="menu-name" contenteditable="true">Bランチ</div><input class="count-input" type="text" inputmode="numeric" value="129"></div>
+      <div class="row"><div class="badge">3</div><div class="menu-name" contenteditable="true">Cランチ</div><input class="count-input" type="text" inputmode="numeric" value="353"></div>
+      <div class="row"><div class="badge">7</div><div class="menu-name" contenteditable="true">カレー</div><input class="count-input" type="text" inputmode="numeric" value="166"></div>
+      <div class="row"><div class="badge">5</div><div class="menu-name" contenteditable="true">麺類(昼)</div><input class="count-input" type="text" inputmode="numeric" value="211"></div>
+      <div class="row"><div class="badge">4</div><div class="menu-name" contenteditable="true">アラカルトB</div><input class="count-input" type="text" inputmode="numeric" value="178"></div>
+      <div class="row"><div class="badge">6</div><div class="menu-name" contenteditable="true">アラカルト100円</div><input class="count-input" type="text" inputmode="numeric" value="103"></div>
+    </div>
+  </div>
+</div>
+
+<div class="panel">
+  <h2>数字の操作</h2>
+  <div class="row-buttons">
+    <button id="randomizeBtn">数字をランダム化</button>
+    <button id="resetBtn" class="secondary">元の写真の値に戻す</button>
+  </div>
+  <p class="hint">「ランダム化」で全項目の数字を1〜3桁のランダム値に変える、「元の写真の値に戻す」で検証済みの118/129/353/166/211/178/103に戻せます。数字欄を直接クリックしても書き換えられます。「A」「B」「C」マークの3行だけが、のこさへん本体の残数管理に実際に反映される項目です(残り4行は読み取りログには出ますが送信対象外です)。</p>
+</div>
+
+<div class="panel">
+  <h2>実寸調整</h2>
+  <p class="hint">交通系ICカードやクレジットカード・キャッシュカードなど、クレジットカードサイズ(幅85.6mm×高さ54.0mm)のカードを下の点線の枠に重ねて、ぴったり合うまでスライダーを動かしてください。合わせると上のタブレット表示も正しい7インチ相当の実寸になります。</p>
+  <div class="calib-card"><span>ここにカードを重ねる<br>(85.6mm × 54.0mm)</span></div>
+  <div class="calib-slider-row">
+    <input type="range" id="calibSlider" min="0.85" max="1.15" step="0.001" value="1">
+    <span class="calib-value" id="calibValue">×1.000</span>
+  </div>
+  <p class="hint">調整値はこのブラウザに記憶され、次に開いたときも引き継がれます。</p>
+</div>
+
+<script>
+  const DEFAULTS = [118, 129, 353, 166, 211, 178, 103];
+  const inputs = Array.from(document.querySelectorAll('.count-input'));
+
+  function randomDigits() {
+    const digits = 1 + Math.floor(Math.random() * 3); // 1〜3桁
+    const min = digits === 1 ? 0 : Math.pow(10, digits - 1);
+    const max = Math.pow(10, digits) - 1;
+    return Math.floor(min + Math.random() * (max - min + 1));
+  }
+
+  document.getElementById('randomizeBtn').addEventListener('click', () => {
+    inputs.forEach((el) => { el.value = randomDigits(); });
+  });
+  document.getElementById('resetBtn').addEventListener('click', () => {
+    inputs.forEach((el, i) => { el.value = DEFAULTS[i]; });
+  });
+
+  inputs.forEach((el) => {
+    el.addEventListener('input', () => {
+      el.value = el.value.replace(/[^0-9]/g, '');
+    });
+  });
+
+  (function () {
+    const root = document.documentElement;
+    const slider = document.getElementById('calibSlider');
+    const valueLabel = document.getElementById('calibValue');
+
+    function applyCalib(value) {
+      root.style.setProperty('--calib', String(value));
+      valueLabel.textContent = '×' + value.toFixed(3);
+    }
+
+    let stored = null;
+    try { stored = localStorage.getItem('mockTabletCalib'); } catch (e) { /* private window等では無視 */ }
+    const initial = stored !== null ? parseFloat(stored) : 1;
+    const startValue = Number.isFinite(initial) ? initial : 1;
+    slider.value = String(startValue);
+    applyCalib(startValue);
+
+    slider.addEventListener('input', () => {
+      const value = parseFloat(slider.value);
+      applyCalib(value);
+      try { localStorage.setItem('mockTabletCalib', String(value)); } catch (e) { /* private window等では無視 */ }
+    });
+  })();
+</script>
+</body>
+</html>

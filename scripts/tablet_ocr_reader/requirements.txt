@@ -1,0 +1,13 @@
+opencv-python-headless
+pytesseract
+requests
+numpy
+# 以下はrecognizer="edgetpu"を使う場合のみ必要。
+# pycoral(通常のpipには無いため、Coral公式ドキュメントのapt/pip手順に
+# 従うこと。ただしDebian 13/Python 3.13等の新しい環境では配布物が無く
+# 使えないことを確認済み)。
+# pycoral
+# 上記が使えない新しい環境向け(2026-09-24確認、Debian 13/aarch64/Python 3.13で
+# 動作確認済み): pip install ai-edge-litert に加え、
+# apt install libedgetpu1-std(Coral公式apt repoが必要、install_edgetpu_compiler.sh参照)
+# ai-edge-litert

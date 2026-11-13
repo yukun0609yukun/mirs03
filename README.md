@@ -3,6 +3,22 @@
 食堂のフードロス削減を目指す看板娘ロボット「のこさへん」のソースコードです(ROS 2 Jazzy / Python)。
 足回り(ESP32 + micro-ROS)、LiDAR・カメラによる人物検出、地図と自己位置推定による移動、音声案内、残数の管理、頭部 iPad の表示とアンケート、Web の管理画面を、1つのスタックにまとめています。
 
+## このリポジトリについて
+
+**コードだけ**を公開しています。次のものは含めていません。
+
+| 含めていないもの | 影響 |
+|---|---|
+| 設計文書、変更履歴、作業日報 | 説明は、このファイルとコード内のコメントだけです |
+| 機体のデータ(3D モデル・URDF・Gazebo のワールド・寸法) | `nokosahen_gazebo` のシミュレーションは、そのままでは動きません |
+| ファームウェアの機体の値(`config.h` など。ピン配置・PID・車輪寸法・安全の限界値) | `firmware/` は、そのままではビルドできません |
+| 設定・調整値(`nokosahen.yaml`、Nav2・SLAM のパラメータ、ビヘイビアツリーなど) | 雛形(`*.example.*`)だけがあります。実機の挙動は、再現できません |
+| 学習済みモデル、画像、放送の文面、音声の設定 | — |
+| アカウント・パスワード | ロボット上のローカルな設定に置きます |
+
+- 現場のアドレスやアカウント名は、公開用に置き換えています(例: IP は `192.0.2.x` などの例示用アドレス、管理画面のアカウント名は `ADMIN_ACCOUNT`)。
+- ここにあるコードは、読むための公開です。このリポジトリだけでロボットが動くことは、想定していません。
+
 ## ハードウェア構成(文化祭の構成)
 
 | 機器 | 役割 |
@@ -20,11 +36,12 @@
 | 場所 | 内容 |
 |---|---|
 | `ros2_ws/src/nokosahen_core` | 本体のロジック。挙動(`behavior_director`)、人物検出(`person_target_detector`)、混雑判定、位置保持、機器の監視(`device_watchdog`)、管理画面(`full_dashboard_node`)、権限(`roles`)、iPad 表示(`display_*`)、アンケート、出店紹介の放送(`pr_intro`・`announce_node`)など |
+| `ros2_ws/src/nokosahen_core/test` | 単体テスト(pytest)。設定値を含む付属データは公開していないため、一部は通りません |
 | `ros2_ws/src/nokosahen_bringup` | launch ファイル(Nav2・SLAM のパラメータ、`nokosahen.yaml` などの設定値は公開していません) |
 | `ros2_ws/src/nokosahen_voice` | 発話文を音声サービスへ橋渡しするノード |
 | `ros2_ws/src/nokosahen_checkout` | 決済横カメラ用ユニット(Raspberry Pi 向け) |
-| `ros2_ws/src/nokosahen_gazebo` | Gazebo のシミュレーション |
-| `firmware/` | ESP32 のファームウェア(PlatformIO) |
+| `ros2_ws/src/nokosahen_gazebo` | Gazebo のシミュレーション(launch のみ。モデル・ワールドは非公開) |
+| `firmware/` | ESP32 のファームウェア(PlatformIO)。機体の値のヘッダは非公開 |
 | `voice_bridge/` | 音声合成・再生サービス(VOICEVOX + 再生) |
 | `scripts/festival/` | 文化祭用の起動スクリプトと見張り(下記) |
 | `scripts/autostart/` | 電源を入れたときの自動起動(systemd) |
@@ -44,7 +61,12 @@ source install/setup.bash
 export ROS_DOMAIN_ID=77
 ```
 
-> このリポジトリには、コードだけを置いています。設計文書、変更履歴、機体のデータ(3Dモデル・寸法・調整値・設定値・ファームウェアの機体の値)、学習済みモデルなどのデータ、作業日報は含めていません。
+テストは、パッケージごとに、ファイルを指定して `pytest` で実行します(ROS 2 を使わず、PC 上で動くものが大半です)。
+
+```bash
+cd ros2_ws/src/nokosahen_core
+python -m pytest test/test_roles.py -q
+```
 
 ## 起動(文化祭の運用)
 
@@ -76,7 +98,7 @@ bash scripts/festival/festival_start.sh --no-dds-wired --light-localization
 
 ## 設定と秘密情報
 
-- 設定の値(調整値・機体の寸法など)は、このリポジトリには含めていません。雛形は `*.example.*` です。
+- 設定の値(調整値・機体の寸法など)は、このリポジトリには含めていません。雛形は `*.example.*` です(例: `config/pr_intro.example.json`)。
 - アカウントとパスワードは、このリポジトリには含めていません。雛形は `ros2_ws/src/nokosahen_bringup/config/secrets.example.yaml` と `accounts.example.yaml` です。実際の値は、ロボット上のローカルな設定ファイルに置きます(`.gitignore` で除外しています)。
 - 出店紹介の放送の文面は、このリポジトリには含めていません。
 

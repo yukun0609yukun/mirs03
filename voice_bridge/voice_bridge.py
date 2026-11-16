@@ -15,6 +15,10 @@
       (b) 従来通り`text`(既に決まった文面)だけを渡し、`generate=true`なら
           Ollamaにその文面を口調だけ言い換えさせる(`generate_with_ollama`)。
     どちらもOllama未導入/応答失敗時はfallback_text(またはtext)をそのまま話す。
+  - 【2026-11-16】ストリーミング発話(環境変数 VOICE_STREAMING、既定"1")。Ollamaを stream:true で呼び、
+    届いた文から順にVOICEVOXで合成・再生する(最初の音までの時間を短くする)。固定文(generate=false)も
+    文ごとに合成・再生する。まだ再生前に失敗したら従来の経路で処理し直す。"0"で従来どおり
+    (全文生成→全文合成→再生)。エンドポイントの仕様は変えていない。
 
 起動:
     python3 voice_bridge.py
@@ -134,9 +138,9 @@ OUTPUT_DEVICE = os.environ.get("VOICE_OUTPUT_DEVICE") or None
 
 HOST = os.environ.get("VOICE_BRIDGE_HOST", "0.0.0.0")
 PORT = int(os.environ.get("VOICE_BRIDGE_PORT", "8100"))
-# 【2026-10-13】接続元IPの許可リスト(カンマ区切り。IPまたは198.51.100.0/24形式。"*"で無効=開発時用)。
-# 既定は1台目Jetson(198.51.100.2)とループバック。許可外のIPからはどのAPIも403(音声・設定は認証なしのため)。
-ALLOW_DEFAULT = "198.51.100.2,127.0.0.1"
+# 【2026-10-13】接続元IPの許可リスト(カンマ区切り。IPまたは10.10.10.0/24形式。"*"で無効=開発時用)。
+# 既定は1台目Jetson(10.10.10.2)とループバック。許可外のIPからはどのAPIも403(音声・設定は認証なしのため)。
+ALLOW_DEFAULT = "10.10.10.2,127.0.0.1"
 
 
 def parse_allow_list(raw: str) -> tuple:
@@ -166,7 +170,7 @@ def client_allowed(ip: str, allow: tuple) -> bool:
         addr = ipaddress.ip_address(ip.split("%")[0])
     except ValueError:
         return False
-    if getattr(addr, "ipv4_mapped", None) is not None:  # ::ffff:198.51.100.2 形式
+    if getattr(addr, "ipv4_mapped", None) is not None:  # ::ffff:10.10.10.2 形式
         addr = addr.ipv4_mapped
     if addr.is_loopback:
         return True
@@ -302,6 +306,25 @@ def _update_utterance(row_id: Optional[int], meta: dict) -> None:
             conn.close()
     except Exception as exc:  # noqa: BLE001
         logger.warning("発話計測値の更新に失敗: %s", exc)
+
+
+def _update_utterance_text(row_id: Optional[int], text: str) -> None:
+    """【2026-11-16】ストリーミング発話用: 行のtextを「実際に話した全文」に更新する(スキーマは変えない)。
+
+    ストリーミングでは最初の文を再生する直前に行を作る(その時点では全文が未確定)ため、
+    発話の終わりにこれで全文に置き換える。1発話=1行は従来どおり。
+    """
+    if row_id is None or not text:
+        return
+    try:
+        conn = sqlite3.connect(UTTERANCE_LOG_DB, timeout=5.0)
+        try:
+            conn.execute("UPDATE utterances SET text = ? WHERE id = ?", (text, row_id))
+            conn.commit()
+        finally:
+            conn.close()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("発話履歴の文面の更新に失敗: %s", exc)
 
 
 _init_utterance_log()
@@ -833,12 +856,17 @@ def _call_ollama(prompt: str, fallback: str, settings: Optional[dict] = None,
         return fb("timeout" if isinstance(exc, requests.exceptions.Timeout) else "error")
 
 
+def _rewrite_prompt(text: str, settings: dict) -> str:
+    """generate_with_ollama(言い換え)のプロンプト。【2026-11-16】ストリーミング版と共用するため関数に切り出し(文面は従来と同一)。"""
+    return f"<設定>\n{settings['persona_prompt']}\n\n伝えたい内容: {text}\n看板娘:"
+
+
 def generate_with_ollama(text: str, trace: Optional[dict] = None,
                          settings: Optional[dict] = None) -> str:
     """Ollamaで、既に決まっている文面をキャラクターの口調に言い換える(旧方式)。"""
     if settings is None:
         settings = get_voice_settings()
-    full_prompt = f"<設定>\n{settings['persona_prompt']}\n\n伝えたい内容: {text}\n看板娘:"
+    full_prompt = _rewrite_prompt(text, settings)
     if trace is not None:
         trace.update(used_menu_names=False, used_remaining=False)
     return _call_ollama(full_prompt, fallback=text, settings=settings, trace=trace)
@@ -956,6 +984,268 @@ def generate_utterance_from_context(context: dict, trace: Optional[dict] = None,
     prompt, flags = build_context_prompt_ex(context, settings)
     trace.update(flags)
     return _call_ollama(prompt, fallback=fallback, settings=settings, trace=trace)
+
+
+# ---------------------------------------------------------------------------
+# 【2026-11-16追加】ストリーミング発話(環境変数 VOICE_STREAMING、既定"1"=有効、"0"で従来どおり)。
+# 従来は「LLMが全文を生成し終える→全文を合成し終える→再生開始」の直列で、最初の音まで約7秒かかっていた。
+# ここでは Ollama を stream:true で呼び、NDJSONで届くトークンを SentenceChunker で文(。！？!?・改行、
+# 長い文は STREAM_SOFT_SPLIT_CHARS 字を超えた後の最初の読点)に切り、確定した文から即座に
+# _StreamingSpeech(合成スレッド→再生スレッド)へ渡す。プロンプトの組み立て・フォールバック文の扱いは
+# 非ストリーミングと同じで、_call_ollama の判定(○〇/max_chars/長さ上限/空応答)と先頭MAX_SENTENCES文への
+# 短縮は「文が確定するたび」に行う(まだ1文も渡していなければ従来どおりフォールバック文を話す)。
+# Ollamaとの通信の失敗は例外で呼び出し側へ返し、呼び出し側(SpeechQueue._process_item_streaming)が
+# 「まだ1文も再生していなければ従来の非ストリーミング経路で処理し直す」を判断する。
+# ---------------------------------------------------------------------------
+VOICE_STREAMING = os.environ.get("VOICE_STREAMING", "1").strip().lower() not in ("0", "false", "off", "no")
+# 読点で切り始める文字数(文頭からこの文字数を超えたら、次の「、」で切る)。
+STREAM_SOFT_SPLIT_CHARS = max(1, int(os.environ.get("VOICE_STREAM_SOFT_SPLIT_CHARS", "25")))
+# 再生待ちとして先に合成しておく文の数(合成済みの波形をメモリに置く上限)。
+STREAM_PREFETCH = max(1, int(os.environ.get("VOICE_STREAM_PREFETCH", "2")))
+# 1文の合成に失敗したときの再試行回数。再試行しても失敗したら(=連続失敗)その発話のストリーミングをやめる。
+STREAM_TTS_RETRIES = 1
+_STREAM_HARD_ENDS = "。！？!?\n"
+_STREAM_CLOSERS = "」』）)"  # 文末記号の直後に来たら同じ文に含める
+_STREAM_SOFT_BREAK = "、"
+
+
+class SentenceChunker:
+    """ストリームで少しずつ届く文字列を、発話の単位(チャンク)に切る。
+
+    feed(s) は確定したチャンクのリスト [(文字列, 文末で切れたか)] を返す。
+    - 文末: 。！？!? と改行。直後に続く文末記号・閉じかっこ(」』）))は同じチャンクに含めるため、
+      バッファが文末記号で終わっている間は次の文字が届くまで確定を待つ(1トークン分の遅れ)。
+    - 長い文: チャンクの頭から STREAM_SOFT_SPLIT_CHARS 字を超えた位置以降の最初の読点(、)で切る(文末=False)。
+    flush() はストリーム終了時用。(確定したチャンクのリスト, 文末記号の無い残り)を返す。
+    文字種の変換などはしない(前後の空白を除くだけ)。
+    """
+
+    def __init__(self, soft_limit: int = STREAM_SOFT_SPLIT_CHARS) -> None:
+        self.soft_limit = max(1, int(soft_limit))
+        self.buf = ""
+
+    def feed(self, s: str) -> list:
+        self.buf += s or ""
+        return self._drain(final=False)
+
+    def flush(self) -> tuple:
+        out = self._drain(final=True)
+        tail = self.buf.strip()
+        self.buf = ""
+        return out, tail
+
+    def _drain(self, final: bool) -> list:
+        out: list = []
+        while self.buf:
+            buf = self.buf
+            idx = next((i for i, ch in enumerate(buf) if ch in _STREAM_HARD_ENDS), -1)
+            region_end = idx if idx >= 0 else len(buf)
+            k = buf.find(_STREAM_SOFT_BREAK, self.soft_limit)
+            if 0 <= k < region_end:
+                self._cut(out, k + 1, False)
+                continue
+            if idx < 0:
+                break
+            j = idx + 1
+            while j < len(buf) and buf[j] in _STREAM_HARD_ENDS + _STREAM_CLOSERS:
+                j += 1
+            if j == len(buf) and not final:
+                break  # 「！？」や「。」」のように続くかもしれないので、次の文字を待つ
+            self._cut(out, j, True)
+        return out
+
+    def _cut(self, out: list, n: int, ends: bool) -> None:
+        chunk, self.buf = self.buf[:n], self.buf[n:]
+        chunk = chunk.strip()
+        if chunk:
+            out.append((chunk, ends))
+
+
+def split_for_speech(text: str) -> list:
+    """決まった文面(固定文・フォールバック文)を、ストリーミングと同じ規則でチャンクのリストにする。"""
+    chunker = SentenceChunker()
+    chunks = [c for c, _ in chunker.feed(text or "")]
+    complete, tail = chunker.flush()
+    chunks += [c for c, _ in complete]
+    if tail:
+        chunks.append(tail)
+    return chunks
+
+
+def _emit_text(text: str, emit) -> str:
+    """決まった文面を文ごとに emit へ渡す。渡した文面(そのまま)を返す。"""
+    for chunk in split_for_speech(text):
+        emit(chunk)
+    return text
+
+
+def _stream_ollama(prompt: str, fallback: str, emit, settings: Optional[dict] = None,
+                   trace: Optional[dict] = None, cancel: Optional[threading.Event] = None,
+                   max_sentences: int = 0) -> str:
+    """_call_ollama のストリーミング版。確定したチャンクから順に emit(chunk) で渡し、渡した全文を返す。
+
+    traceへの記録は _call_ollama と同じ項目(llm_ms はストリームの受信を終えるまでの時間)。
+    判定も同じ考え方を「チャンクが確定するたび」に行う:
+      - ○〇のプレースホルダ / max_chars超え / 長さ上限(done_reason=length)で切れた最後の未完の文 / 空応答
+        → まだ1つも渡していなければ、従来どおりフォールバック文(fallback_reasonも同じ値)を文ごとに渡す。
+          既に渡していれば、そこで打ち切る(それ以降は話さない。trimmed=True)。
+      - max_sentences>0 なら、その文数に達した時点で受信を打ち切る(limit_sentences と同じ結果になり、
+        Ollamaの残りの生成も止まる)。フォールバック文には適用しない。
+    Ollamaとの通信の失敗(接続断・タイムアウト・エラー行・途中切れ)は trace["error"] に記録して例外を送出する。
+    cancel(Event)がセットされたら受信をやめ、それまでに渡した分を返す(フォールバックもしない)。
+    """
+    if trace is None:
+        trace = {}
+    if settings is None:
+        settings = get_voice_settings()
+    num_predict = int(settings["num_predict"])
+    temperature = float(settings["temperature"])
+    max_chars = int(settings["max_chars"])
+    timeout = float(settings["ollama_timeout_sec"])
+    payload = {
+        "model": MODEL_NAME,
+        "prompt": prompt,
+        "stream": True,
+        "keep_alive": OLLAMA_KEEP_ALIVE,
+        "options": {"num_predict": num_predict, "temperature": temperature},
+    }
+    trace.update(
+        model=MODEL_NAME, temperature=temperature, num_predict=num_predict,
+        prompt=_trim_prompt(prompt), trimmed=False,
+    )
+    chunker = SentenceChunker()
+    emitted: list = []
+    state = {"chars": 0, "sentences": 0, "reason": None}
+
+    def cancelled() -> bool:
+        return (cancel is not None and cancel.is_set()) or not voice_master.enabled
+
+    def accept(chunk: str, ends: bool) -> bool:
+        """チャンクを判定して渡す。これ以上受け取らない(打ち切る)ときFalse。"""
+        if any(ch in chunk for ch in "○〇"):
+            if emitted:
+                logger.warning("Ollama応答の途中に○○のプレースホルダが出たため、そこで打ち切り")
+                trace["trimmed"] = True
+            else:
+                logger.warning("Ollama応答に○○のプレースホルダが残っているため、フォールバックで代替")
+                state["reason"] = "placeholder"
+            return False
+        if max_chars > 0 and state["chars"] + len(chunk) > max_chars:
+            if emitted:
+                trace["trimmed"] = True
+            else:
+                logger.warning("Ollama応答が最大文字数(%d)を超え文末も無いため、フォールバックで代替", max_chars)
+                state["reason"] = "length_cut"
+            return False
+        emitted.append(chunk)
+        state["chars"] += len(chunk)
+        emit(chunk)
+        if ends:
+            state["sentences"] += 1
+            if max_sentences > 0 and state["sentences"] >= max_sentences:
+                logger.info("先頭%d文に達したため、Ollamaの受信を打ち切りました", max_sentences)
+                return False
+        return not cancelled()
+
+    t0 = time.monotonic()
+    stopped = False
+    done_reason = None
+    try:
+        try:
+            with requests.post(OLLAMA_URL, json=payload, stream=True, timeout=timeout) as res:
+                res.raise_for_status()
+                finished = False
+                for line in res.iter_lines():
+                    if cancelled():
+                        stopped = True
+                        break
+                    if time.monotonic() - t0 > timeout:
+                        raise requests.exceptions.Timeout(f"Ollamaのストリーミング応答が{timeout:.0f}秒を超えました")
+                    if not line:
+                        continue
+                    obj = json.loads(line)
+                    if obj.get("error"):
+                        raise RuntimeError(f"Ollama error: {obj['error']}")
+                    for chunk, ends in chunker.feed(obj.get("response") or ""):
+                        if not accept(chunk, ends):
+                            stopped = True
+                            break
+                    if stopped:
+                        break
+                    if obj.get("done"):
+                        done_reason = obj.get("done_reason")
+                        finished = True
+                        break
+                if not stopped and not finished:
+                    raise requests.exceptions.ConnectionError("Ollamaのストリームが完了(done)前に切れました")
+        finally:
+            trace["llm_ms"] = round((time.monotonic() - t0) * 1000.0, 1)
+    except Exception as exc:  # noqa: BLE001 - 呼び出し側で従来経路への切り替えを判断する
+        logger.warning("Ollamaのストリーミング生成に失敗(渡し済み%d片): %s", len(emitted), exc)
+        trace["error"] = _short_err(exc)
+        raise
+
+    if not stopped:
+        complete, tail = chunker.flush()
+        for chunk, ends in complete:
+            if not accept(chunk, ends):
+                stopped = True
+                break
+        if not stopped and tail:
+            if done_reason == "length" and not tail.endswith(_SENTENCE_ENDS):
+                # num_predictに達して途中で切れた最後の文(「うど」のような語の途中切れ)は話さない。
+                if emitted:
+                    logger.warning("Ollama応答が長さ上限で切れたため、最後の文末までに切り詰め")
+                    trace["trimmed"] = True
+                else:
+                    logger.warning("Ollama応答が途中で切れ文末も無いため、フォールバックで代替")
+                    state["reason"] = "length_cut"
+            else:
+                accept(tail, True)
+
+    if cancelled():
+        return "".join(emitted)
+    if not emitted:
+        reason = state["reason"]
+        if reason is None:
+            logger.warning("Ollamaが空応答、フォールバックで代替")
+            reason = "empty"
+        trace["fallback_reason"] = reason
+        return _emit_text(fallback, emit)
+    return "".join(emitted)
+
+
+def generate_with_ollama_stream(text: str, emit, trace: Optional[dict] = None,
+                                settings: Optional[dict] = None, cancel: Optional[threading.Event] = None,
+                                max_sentences: int = 0) -> str:
+    """generate_with_ollama のストリーミング版(プロンプト・フォールバックは同じ)。確定した文から emit へ渡す。"""
+    if settings is None:
+        settings = get_voice_settings()
+    if trace is not None:
+        trace.update(used_menu_names=False, used_remaining=False)
+    return _stream_ollama(_rewrite_prompt(text, settings), fallback=text, emit=emit, settings=settings,
+                          trace=trace, cancel=cancel, max_sentences=max_sentences)
+
+
+def generate_utterance_from_context_stream(context: dict, emit, trace: Optional[dict] = None,
+                                           settings: Optional[dict] = None,
+                                           cancel: Optional[threading.Event] = None,
+                                           max_sentences: int = 0) -> str:
+    """generate_utterance_from_context のストリーミング版(プロンプト・フォールバック・traceの扱いは同じ)。"""
+    if trace is None:
+        trace = {}
+    if settings is None:
+        settings = get_voice_settings()
+    fallback = str(context.get("fallback_text", "")).strip()
+    menu_items = context.get("menu_items") or []
+    if not menu_items:
+        trace.update(used_menu_names=False, used_remaining=False,
+                     phase=str(context.get("phase", "initial")), fallback_reason="no_menu")
+        return _emit_text(fallback, emit)
+    prompt, flags = build_context_prompt_ex(context, settings)
+    trace.update(flags)
+    return _stream_ollama(prompt, fallback=fallback, emit=emit, settings=settings, trace=trace,
+                          cancel=cancel, max_sentences=max_sentences)
 
 
 _preview_lock = threading.Lock()
@@ -1844,7 +2134,7 @@ def speak_voicevox(text: str, trace: Optional[dict] = None) -> None:
         query_res = requests.post(
             f"{VOICEVOX_URL}/audio_query",
             params={"text": text, "speaker": SPEAKER_ID},
-            timeout=10,
+            timeout=60,
         )
         query_res.raise_for_status()
         query_data = query_res.json()
@@ -1894,6 +2184,167 @@ def speak_voicevox(text: str, trace: Optional[dict] = None) -> None:
         _consecutive_speak_failures += 1
         logger.error("VOICEVOX合成/再生エラー(連続%d回目): %s", _consecutive_speak_failures, exc)
         logger.error("VOICEVOX Engineが起動しているか確認してください: %s", VOICEVOX_URL)
+
+
+class _StreamingSpeech:
+    """【2026-11-16追加】1発話ぶんの「文ごとの合成 → 順番どおりの再生」パイプライン(ストリーミング発話用)。
+
+    put(文) で合成待ちに積む → 合成スレッド(1本)が積まれた順に synthesize_voicevox_wav で合成し、
+    既存と同じ apply_speech_gain(発話音量・リミッタ)をかけて再生待ちへ(先読みは STREAM_PREFETCH 文まで)
+    → 再生スレッド(1本)が順に既存の _play_audio(_play_lockで発話/アナウンスの排他)で鳴らす。
+    合成・再生ともに1本ずつのFIFOなので、再生順は put した順に厳密に一致し、再生中に後続文の合成が進む。
+    発話音量は従来どおり発話の開始時点の値を使う(途中で変えても次の発話から)。
+    BGMのダッキングと /status の speaking は SpeechQueue._worker が発話全体(この処理の前後)で掛けている。
+    音声マスターOFFは各文の合成前・再生前・再生後に確認し、OFFなら後続文を捨てて止める(muted=True)。
+    合成は1文につき STREAM_TTS_RETRIES 回まで再試行し、それでも失敗したら止める(failedに理由)。
+    """
+
+    def __init__(self, on_first_play=None) -> None:
+        self.gain = voice_levels.speech_volume
+        self.on_first_play = on_first_play
+        self.cancel = threading.Event()
+        self._lock = threading.Lock()
+        self._synth_q: "queue.Queue" = queue.Queue()
+        self._play_q: "queue.Queue" = queue.Queue(maxsize=STREAM_PREFETCH)
+        self.queued: list = []  # put された文(順番どおり)
+        self.played: list = []  # 実際に再生した文
+        self.played_any = False
+        self.muted = False
+        self.failed = ""  # 合成/再生の失敗の概要(空=失敗なし)
+        self.tts_ms = 0.0  # 各文の合成時間の合計
+        self.play_ms = 0.0  # 各文の再生時間の合計
+        self.first_play_mono: Optional[float] = None
+        self._closed = False
+        self._synth_thread = threading.Thread(target=self._synth_loop, name="speech-synth", daemon=True)
+        self._play_thread = threading.Thread(target=self._play_loop, name="speech-play", daemon=True)
+        self._synth_thread.start()
+        self._play_thread.start()
+
+    def put(self, text: str) -> bool:
+        """文を合成待ちに積む。止められている(中止・失敗・OFF)ならFalse。"""
+        text = (text or "").strip()
+        if not text or self.cancel.is_set() or self._closed:
+            return False
+        self.queued.append(text)
+        self._synth_q.put(text)
+        return True
+
+    def close(self) -> None:
+        """もう文は来ない(合成スレッドへ終わりの印を送る)。何度呼んでもよい。"""
+        if not self._closed:
+            self._closed = True
+            self._synth_q.put(None)
+
+    def wait(self) -> None:
+        """残りの文の合成・再生が終わる(または中止される)まで待つ。"""
+        self.close()
+        self._synth_thread.join()
+        self._play_thread.join()
+
+    def abort_if_not_started(self) -> bool:
+        """まだ1文も再生していなければ中止してTrue(従来経路で処理し直せる)。再生済みならFalse。"""
+        with self._lock:
+            if self.played_any:
+                return False
+            self.cancel.set()
+            return True
+
+    def _mute(self) -> None:
+        with self._lock:
+            self.muted = True
+            self.cancel.set()
+
+    def _fail(self, msg: str) -> None:
+        with self._lock:
+            if not self.failed:
+                self.failed = msg
+            self.cancel.set()
+
+    def _put_play(self, item) -> bool:
+        while not self.cancel.is_set():
+            try:
+                self._play_q.put(item, timeout=0.2)
+                return True
+            except queue.Full:
+                continue
+        return False
+
+    def _synth_loop(self) -> None:
+        try:
+            while True:
+                text = self._synth_q.get()
+                if text is None or self.cancel.is_set():
+                    break
+                if not voice_master.enabled:
+                    self._mute()
+                    break
+                blob = None
+                last_exc: Optional[BaseException] = None
+                for attempt in range(1 + STREAM_TTS_RETRIES):
+                    t0 = time.monotonic()
+                    try:
+                        blob = synthesize_voicevox_wav(text)
+                    except Exception as exc:  # noqa: BLE001
+                        last_exc = exc
+                        logger.warning("VOICEVOX合成に失敗(%d回目): %s: %s", attempt + 1, text[:20], exc)
+                    finally:
+                        self.tts_ms += (time.monotonic() - t0) * 1000.0
+                    if blob is not None or self.cancel.is_set():
+                        break
+                if blob is None:
+                    if not self.cancel.is_set():
+                        self._fail(_short_err(last_exc) if last_exc else "VOICEVOX合成に失敗")
+                    break
+                data, samplerate = sf.read(io.BytesIO(blob), dtype="float32")
+                data = apply_speech_gain(data, self.gain, samplerate)
+                if not self._put_play((text, data, samplerate)):
+                    break
+        except Exception as exc:  # noqa: BLE001 - スレッドの例外で発話全体を巻き込まない
+            logger.exception("ストリーミング合成スレッドでエラー")
+            self._fail(_short_err(exc))
+        self._put_play(None)  # 終わりの印(中止時は再生側が自分で抜ける)
+
+    def _play_loop(self) -> None:
+        while True:
+            try:
+                item = self._play_q.get(timeout=0.2)
+            except queue.Empty:
+                if self.cancel.is_set():
+                    return
+                continue
+            if item is None:
+                return
+            text, data, samplerate = item
+            with self._lock:
+                if self.cancel.is_set():
+                    return
+                if not voice_master.enabled:
+                    self.muted = True
+                    self.cancel.set()
+                    return
+                first = not self.played_any
+                self.played_any = True
+            if first:
+                self.first_play_mono = time.monotonic()
+                if self.on_first_play is not None:
+                    try:
+                        self.on_first_play()
+                    except Exception:  # noqa: BLE001
+                        logger.exception("最初の文の再生前処理でエラー")
+            t0 = time.monotonic()
+            try:
+                _play_audio(data, samplerate)
+            except Exception as exc:  # noqa: BLE001
+                logger.error("ストリーミング発話の再生エラー: %s", exc)
+                self._fail(_short_err(exc))
+                return
+            finally:
+                self.play_ms += (time.monotonic() - t0) * 1000.0
+            self.played.append(text)
+            if not voice_master.enabled:
+                # 再生中にOFFになった(_apply_masterのsd.stop()で止まった): 後続の文は捨てる
+                self._mute()
+                return
 
 
 class SpeechQueue:
@@ -1993,10 +2444,28 @@ class SpeechQueue:
 
     @staticmethod
     def _process_item(item: dict) -> None:
+        """1件を処理する。【2026-11-16】VOICE_STREAMINGが有効ならストリーミング(_process_item_streaming:
+        生成しながら文ごとに合成・再生)で処理し、まだ1文も再生しないうちに失敗したら
+        従来の非ストリーミング経路(_process_item_legacy)で処理し直す。無効なら従来経路のみ。"""
+        if VOICE_STREAMING:
+            try:
+                if SpeechQueue._process_item_streaming(item):
+                    return
+            except Exception:  # noqa: BLE001
+                if item.get("_stream_played"):
+                    # 既に一部を話している: 処理し直すと同じ文を二度話すので、ここで終える
+                    logger.exception("ストリーミング発話の途中で予期しないエラー(再生済みのため処理し直さない)")
+                    return
+                logger.exception("ストリーミング発話で予期しないエラー。従来経路で処理し直します")
+        SpeechQueue._process_item_legacy(item)
+
+    @staticmethod
+    def _process_item_legacy(item: dict) -> None:
         """1件を 生成(Ollama) -> 履歴記録 -> 合成・再生(VOICEVOX) の順に処理し、各段階の時間を記録する。
 
         履歴は再生前に1行作り(従来どおり、再生に失敗しても「話そうとした」記録は残る)、
         再生が終わったら同じ行へ tts_ms/play_ms/total_ms/speak_ok を追記する。
+        【2026-11-16】中身は従来の _process_item のまま(VOICE_STREAMING=0 のときと、ストリーミングの失敗時に使う)。
         """
         if not voice_master.enabled:
             return  # 取り出した後にOFFになった: 生成も再生もしない
@@ -2057,6 +2526,136 @@ class SpeechQueue:
             after["error"] = "; ".join(x for x in (trace.get("error"), "TTS " + trace["speak_error"]) if x)[:300]
         _update_utterance(row_id, after)
 
+    @staticmethod
+    def _process_item_streaming(item: dict) -> bool:
+        """【2026-11-16追加】1件をストリーミングで処理する。処理を終えたらTrue、
+        まだ1文も再生しないうちに失敗したらFalse(呼び出し側が従来経路で処理し直す)。
+
+        生成(Ollama stream)・固定文の分割はこのスレッド(SpeechQueueのワーカー)で行い、確定した文を
+        _StreamingSpeech へ渡す。合成・再生はその中の2本のスレッドで並行して進む。
+        履歴は従来どおり1発話=1行: 最初の文を再生する直前に行を作り(この時点では全文が未確定)、
+        発話が終わったら同じ行の text を実際に話した全文に置き換え、llm_ms/tts_ms/play_ms/total_ms 等を書く。
+        tts_ms/play_ms は各文の合計(合成は再生と並行するので、total_ms はそれらの和より短くなる)。
+        「最初の音までの時間」はログにだけ出す(DBスキーマは変えない)。
+        """
+        global _last_speak_success_time, _consecutive_speak_failures
+        if not voice_master.enabled:
+            return True  # 取り出した後にOFFになった: 生成も再生もしない
+        start = time.monotonic()
+        enq = item.get("enqueued_mono", start)
+        settings = get_voice_settings()  # 設定は1件ごとに読む(保存したら次の発話から効く)
+        trace: dict = {}
+        context = item.get("context")
+        kind = "context" if isinstance(context, dict) else "text"
+        if kind == "context":
+            trace["phase"] = str(context.get("phase", "initial"))
+        row: dict = {"id": None}
+        pipe: Optional[_StreamingSpeech] = None
+
+        def on_first_play() -> None:
+            # 再生スレッドから、最初の文を鳴らす直前に呼ばれる。
+            item["_stream_played"] = True
+            meta = {
+                "request_id": item.get("request_id"),
+                "kind": kind,
+                "queue_wait_ms": round((start - enq) * 1000.0, 1),
+                **{k: trace.get(k) for k in (
+                    "phase", "llm_ms", "used_menu_names", "used_remaining", "fallback_reason",
+                    "trimmed", "error", "model", "prompt", "temperature", "num_predict")},
+            }
+            row["id"] = _record_utterance("".join(pipe.queued), meta)
+            logger.info("最初の音まで %.0fms (受付から。処理開始から %.0fms) [%s]",
+                        (time.monotonic() - enq) * 1000.0, (time.monotonic() - start) * 1000.0,
+                        item.get("request_id"))
+
+        pipe = _StreamingSpeech(on_first_play=on_first_play)
+        stream_exc: Optional[BaseException] = None
+        try:
+            if kind == "context":
+                if item.get("generate", True):
+                    generate_utterance_from_context_stream(
+                        context, pipe.put, trace=trace, settings=settings, cancel=pipe.cancel,
+                        max_sentences=MAX_SENTENCES)
+                else:
+                    text = str(context.get("fallback_text", "")).strip() or item["text"]
+                    trace.update(used_menu_names=False, used_remaining=False)
+                    _emit_text(text, pipe.put)
+            else:
+                if item.get("generate"):
+                    generate_with_ollama_stream(
+                        item["text"], pipe.put, trace=trace, settings=settings, cancel=pipe.cancel,
+                        max_sentences=MAX_SENTENCES)
+                else:
+                    trace.update(used_menu_names=False, used_remaining=False)
+                    _emit_text(item["text"], pipe.put)
+        except Exception as exc:  # noqa: BLE001 - Ollama切断など。下で従来経路へ切り替えるか判断する
+            stream_exc = exc
+            trace.setdefault("error", _short_err(exc))
+        finally:
+            pipe.close()
+
+        if stream_exc is not None and pipe.abort_if_not_started():
+            pipe.wait()
+            logger.warning("ストリーミング生成に失敗(まだ再生前)のため、従来経路で処理し直します: %s",
+                           _short_err(stream_exc))
+            return False
+        pipe.wait()  # 既に再生を始めていれば、渡し済みの文は最後まで話す
+
+        spoken = "".join(pipe.played)
+        if pipe.muted or not voice_master.enabled:
+            logger.info("音声マスターOFFのため発話を中止しました(再生済み%d/%d文)", len(pipe.played), len(pipe.queued))
+            if row["id"] is not None:
+                _update_utterance_text(row["id"], spoken)
+                _update_utterance(row["id"], {
+                    "llm_ms": trace.get("llm_ms"), "fallback_reason": trace.get("fallback_reason"),
+                    "trimmed": trace.get("trimmed"), "tts_ms": round(pipe.tts_ms, 1),
+                    "play_ms": round(pipe.play_ms, 1), "speak_ok": 0,
+                    "error": "音声マスターOFFのため途中で中止",
+                    "total_ms": round((time.monotonic() - enq) * 1000.0, 1),
+                })
+            return True
+        if not pipe.queued:
+            # 話す文が1つも無かった(フォールバック文も空など)。従来経路に任せる(従来どおり履歴に失敗として残る)。
+            return False
+        if pipe.failed and not pipe.played_any:
+            logger.warning("ストリーミングの合成/再生に失敗(まだ再生前)のため、従来経路で処理し直します: %s", pipe.failed)
+            return False
+
+        total_ms = round((time.monotonic() - enq) * 1000.0, 1)
+        if row["id"] is None and not item.get("_stream_played"):
+            row["id"] = _record_utterance(spoken, {"request_id": item.get("request_id"), "kind": kind})
+        _update_utterance_text(row["id"], spoken)
+        after = {
+            "llm_ms": trace.get("llm_ms"),
+            "fallback_reason": trace.get("fallback_reason"),
+            "trimmed": trace.get("trimmed"),
+            "tts_ms": round(pipe.tts_ms, 1),
+            "play_ms": round(pipe.play_ms, 1),
+            "speak_ok": not pipe.failed,
+            "total_ms": total_ms,
+        }
+        errs = [trace.get("error")] + (["TTS " + pipe.failed] if pipe.failed else [])
+        err_text = "; ".join(x for x in errs if x)[:300]
+        if err_text:
+            after["error"] = err_text
+        _update_utterance(row["id"], after)
+
+        if pipe.failed:
+            _consecutive_speak_failures += 1
+            logger.error("VOICEVOX合成/再生エラー(連続%d回目、%d/%d文まで再生): %s", _consecutive_speak_failures,
+                         len(pipe.played), len(pipe.queued), pipe.failed)
+        else:
+            _last_speak_success_time = time.time()
+            _consecutive_speak_failures = 0
+        first_ms = None if pipe.first_play_mono is None else (pipe.first_play_mono - enq) * 1000.0
+        logger.info(
+            "ストリーミング発話完了 [%s] 最初の音まで %s ms / llm %s ms / tts %.0f ms / play %.0f ms / total %.0f ms"
+            " (%d文): %s",
+            item.get("request_id"), "-" if first_ms is None else f"{first_ms:.0f}",
+            trace.get("llm_ms", "-"), pipe.tts_ms, pipe.play_ms, total_ms, len(pipe.played), spoken[:40],
+        )
+        return True
+
     def _worker(self) -> None:
         while True:
             item = self._queue.get()
@@ -2096,7 +2695,7 @@ ANNOUNCE_KEEPALIVE_SEC = _env_float("VOICE_ANNOUNCE_KEEPALIVE_SEC", 15.0)
 
 def synthesize_voicevox_wav(text: str) -> bytes:
     """VOICEVOXで合成してwavのバイト列を返す(再生はしない。アナウンスのキャッシュ用)。失敗は例外。"""
-    query_res = requests.post(f"{VOICEVOX_URL}/audio_query", params={"text": text, "speaker": SPEAKER_ID}, timeout=10)
+    query_res = requests.post(f"{VOICEVOX_URL}/audio_query", params={"text": text, "speaker": SPEAKER_ID}, timeout=60)
     query_res.raise_for_status()
     query_data = query_res.json()
     query_data.update(VOICE_QUERY_TUNING)
@@ -2154,8 +2753,6 @@ voice_master.add_listener(announce_engine.on_master_change)
 
 def make_handler():
     class Handler(BaseHTTPRequestHandler):
-        # 【2026-11-05】読み取りのタイムアウト(接続だけして何も送らない相手にスレッドを占有されない)。
-        timeout = 15
         def log_message(self, fmt: str, *args) -> None:  # noqa: A003
             logger.debug(fmt, *args)
 
@@ -2474,6 +3071,18 @@ def main() -> None:
     logger.info("音量: 発話x%.2f BGM %.2f ダッキング%.2f (保存ファイル%s)", voice_levels.speech_volume,
                 voice_levels.bgm_volume, voice_levels.bgm_duck_volume,
                 "あり" if voice_levels.from_file else "なし=環境変数/既定値")
+    logger.info("ストリーミング発話: %s (VOICE_STREAMING)", "有効" if VOICE_STREAMING else "無効=従来の全文生成→全文合成→再生")
+    # 起動直後の最初の発話が遅い/失敗するのを避けるため、VOICEVOXを先に温める(失敗しても無視)
+    def _warmup_voicevox() -> None:
+        for _ in range(2):
+            try:
+                synthesize_voicevox_wav("こんにちは")
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("VOICEVOXウォームアップ失敗: %s", exc)
+                return
+        logger.info("VOICEVOXウォームアップ完了")
+
+    threading.Thread(target=_warmup_voicevox, daemon=True).start()
     server = ThreadingHTTPServer((HOST, PORT), make_handler())
     logger.info("voice_bridge listening on http://%s:%s", HOST, PORT)
     logger.info("VOICEVOX_URL=%s OLLAMA_URL=%s OUTPUT_DEVICE=%s", VOICEVOX_URL, OLLAMA_URL, OUTPUT_DEVICE)
